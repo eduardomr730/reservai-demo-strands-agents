@@ -176,7 +176,7 @@ async def validate_twilio_request(request: Request) -> bool:
         logger.info(f"Request headers: {request.headers}")
         # Obtener la firma de Twilio
         signature = request.headers.get("x-twilio-signature", "")
-        logger.info(f"Signature: {url}")
+        logger.info(f"Signature: {signature}")
 
         # Obtener la URL completa del request
         url = str(request.url)
