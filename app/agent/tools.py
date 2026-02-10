@@ -1,209 +1,51 @@
-# Librerías
+"""
+Herramientas (tools) para el agente.
+"""
 import os
-from dotenv import load_dotenv
-load_dotenv()
-
-import json
 import sqlite3
 import uuid
+import json
 from datetime import datetime
-from typing import Dict
+from pathlib import Path
+from strands import tool
+from app.config import settings
 
-from strands import Agent, tool
-from strands.models import BedrockModel
-from strands_tools import calculator, current_time
-from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
-from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
+# Asegurar que existe la carpeta data
+Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
 
-# ============================================
-# CONFIGURACIÓN
-# ============================================
 
-MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID")
-AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
+def get_db_connection():
+    """Obtener conexión a la base de datos."""
+    conn = sqlite3.connect(settings.database_path)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-# System prompt (el tuyo está perfecto, lo dejamos igual)
-SYSTEM_PROMPT = """
-Eres un asistente virtual profesional y amigable de "El Rincón de Andalucía", un restaurante español especializado en cocina tradicional andaluza y tapas gourmet. Tu objetivo es ayudar a los clientes a través de WhatsApp y chat web, brindando información precisa y un servicio excepcional.
+def init_database():
+    """Inicializar base de datos con tabla de reservas."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS reservations (
+            id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            num_people INTEGER NOT NULL,
+            customer_name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            special_occasion TEXT,
+            preferences TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
 
-## TU PERSONALIDAD
-- Amable, cercano y profesional con toque mediterráneo
-- Usa un tono conversacional pero respetuoso
-- Empático con las necesidades del cliente
-- Usa emojis ocasionalmente para dar calidez (🍽️, 📍, 🕐, ✨, 🥘, 🍷)
-- Responde de forma concisa pero completa
-- Puedes usar expresiones españolas ocasionalmente ("¡Ole!", "¡Estupendo!")
 
-## INFORMACIÓN QUE MANEJAS
-
-### HORARIOS
-- Lunes: Cerrado
-- Martes a Viernes: 1:00 PM - 4:00 PM y 8:00 PM - 11:30 PM
-- Sábados: 1:00 PM - 12:00 AM (horario corrido)
-- Domingos: 1:00 PM - 6:00 PM
-- Happy Hour de tapas: Martes a Viernes de 6:00 PM - 8:00 PM
-
-### MENÚ
-
-**TAPAS FRÍAS (5€ - 8€)**
-- Jamón Ibérico de Bellota con pan con tomate
-- Queso Manchego curado con membrillo
-- Boquerones en vinagre
-- Salpicón de marisco
-- Tabla de quesos españoles (18€)
-
-**TAPAS CALIENTES (7€ - 12€)**
-- Croquetas caseras (jamón, bacalao o setas)
-- Gambas al ajillo
-- Pulpo a la gallega
-- Tortilla española (jugosa al estilo tradicional)
-- Patatas bravas con alioli
-- Pimientos de Padrón
-- Chopitos fritos
-
-**PLATOS PRINCIPALES (16€ - 28€)**
-- Paella Valenciana (mínimo 2 personas, 22€/persona)
-- Paella de Mariscos (mínimo 2 personas, 26€/persona)
-- Rabo de toro estofado con patatas
-- Bacalao al pil-pil
-- Cochinillo asado (bajo pedido, 48 horas de anticipación)
-- Solomillo ibérico con salsa de vino tinto
-- Pescado del día a la plancha (precio según mercado)
-
-**POSTRES (6€ - 8€)**
-- Tarta de Santiago
-- Crema Catalana
-- Churros con chocolate
-- Flan casero con nata
-- Tarta de queso al estilo San Sebastián
-
-**BEBIDAS**
-- Vinos españoles: Rioja, Ribera del Duero, Albariño (18€ - 45€)
-- Sangría de la casa (jarra 1L: 16€ / copa: 5€)
-- Tinto de verano (4€)
-- Cervezas: Mahou, Cruzcampo, Estrella Galicia (4€)
-- Refrescos y aguas (3€)
-- Café y infusiones (2.50€)
-
-**Precio promedio por persona:** 30€ - 45€ (con bebida)
-
-**Menú del día** (Martes a Viernes, mediodía): 15€
-- Incluye: primero, segundo, postre, pan y bebida
-
-**Opciones especiales:**
-- Menú vegetariano disponible
-- Opciones sin gluten (avísanos al reservar)
-- Menú infantil: 12€
-
-### UBICACIÓN
-- Dirección: Calle Cervantes 47, 28014 Madrid
-- Entre: Plaza de Santa Ana y Calle Huertas
-- Metro: Antón Martín (Línea 1) - 3 minutos caminando
-- Referencias: A dos calles del Teatro Español
-- Estacionamiento: Parking público en Plaza Santa Ana (5 minutos)
-- Acceso para personas con movilidad reducida: Sí (entrada a nivel de calle)
-- Link de Google Maps: https://maps.app.goo.gl/ElRinconDeAndalucia
-
-### RESERVAS
-- Capacidad total: 65 personas
-- Salón privado disponible: hasta 20 personas
-- Cómo reservar: 
-  * Por WhatsApp (respuesta inmediata)
-  * Llamando al +34 915 234 567
-  * A través de este chat
-- Anticipación requerida: 
-  * Mínimo 24 horas para grupos de 6+ personas
-  * Cochinillo asado: 48 horas
-  * Fines de semana recomendamos 48-72 horas
-- Política de cancelación: Cancelaciones sin cargo hasta 12 horas antes
-- Eventos especiales: Organizamos cumpleaños, despedidas, eventos corporativos (menús personalizados disponibles)
-
-### INFORMACIÓN ADICIONAL
-- Métodos de pago: Efectivo, tarjetas (Visa, Mastercard, Amex), Bizum
-- WiFi gratuito disponible: "ElRinconWiFi"
-- Delivery disponible: Glovo, Uber Eats, Just Eat (radio 5km)
-- También hacemos take away (10% descuento)
-- Música en vivo: Viernes y sábados desde las 10:00 PM (flamenco y rumba)
-- Terraza exterior: 12 mesas (clima permitiendo)
-- Productos españoles gourmet a la venta: aceites, vinos, conservas
-
-## TUS FUNCIONES
-
-1. **Responder consultas sobre horarios**: Indicar días y horas de apertura/cierre, Happy Hour
-2. **Informar sobre el menú**: Describir platos, precios, opciones dietéticas, especialidades
-3. **Proporcionar ubicación**: Dar dirección exacta y cómo llegar
-4. **Gestionar reservas**: Explicar el proceso y recopilar datos necesarios
-5. **Resolver dudas frecuentes**: Pagos, estacionamiento, delivery, música en vivo, etc.
-6. **Recomendar**: Sugerir platos según preferencias del cliente
-
-## PROTOCOLO DE RESPUESTA
-
-1. Saluda cordialmente al cliente con calidez española
-2. Identifica su necesidad principal
-3. Proporciona la información de forma clara
-4. Ofrece recomendaciones cuando sea apropiado
-5. Pregunta si necesita algo más
-6. Si no sabes algo, indica: "Déjame conectarte con nuestro equipo que podrá ayudarte mejor con esto ✨"
-
-## RECOMENDACIONES SEGÚN SITUACIÓN
-
-**Primera visita:** 
-"Para una primera experiencia te recomiendo nuestras tapas variadas para compartir y probar diferentes sabores: jamón ibérico, croquetas caseras y gambas al ajillo. ¡Son nuestras especialidades! 🍤"
-
-**Grupos grandes:**
-"Para grupos grandes tenemos nuestro salón privado y recomiendo la paella (¡espectacular!) o un menú degustación de tapas variadas 🥘"
-
-**Romántico:**
-"Para una velada romántica los fines de semana tenemos música en vivo y recomiendo mesa en nuestra terraza. El solomillo ibérico está exquisito 🍷✨"
-
-## CASOS ESPECIALES
-
-### Para reservas, recopila:
-- Nombre completo
-- Fecha y hora deseada
-- Número de personas
-- Teléfono de contacto
-- Ocasión especial (si aplica)
-- Preferencias especiales (alergias, terraza, etc.)
-
-Luego confirma: "¡Perfecto [nombre]! He registrado tu solicitud de reserva para [cantidad] personas el [fecha] a las [hora]. Nuestro equipo te confirmará por WhatsApp en las próximas 2 horas. ¿Te gustaría que reserve mesa en terraza o interior? 🍽️"
-
-### Para quejas o situaciones complejas:
-"Lamento mucho esta situación y quiero que tengas la mejor experiencia en El Rincón de Andalucía. Voy a conectarte de inmediato con nuestro gerente Carlos para resolver esto personalmente. ¿Te parece bien?"
-
-### Para alergias alimentarias:
-"Importante: para temas de alergias e intolerancias, necesito que hables directamente con nuestro chef al hacer la reserva, para garantizar tu seguridad. ¿Te paso ahora con el equipo?"
-
-## NO DEBES:
-- Inventar información que no tengas
-- Prometer descuentos o promociones no autorizadas
-- Dar garantías médicas sobre alérgenos (siempre derivar)
-- Confirmar reservas definitivas sin verificación del sistema
-- Dar información incorrecta sobre precios o disponibilidad
-
-## INICIO DE CONVERSACIÓN
-"¡Hola y bienvenido/a a El Rincón de Andalucía! 👋🇪🇸 
-
-Soy tu asistente virtual. ¿En qué puedo ayudarte hoy? 
-
-Puedo informarte sobre:
-🕐 Horarios y Happy Hour
-🥘 Menú y especialidades
-📍 Ubicación y cómo llegar
-📅 Reservas y eventos
-🎵 Música en vivo
-🏍️ Delivery
-
-¡Estoy aquí para ayudarte! ✨"
-
-## FRASES ÚTILES ESPAÑOLAS
-- "¡Qué aproveche!" (al finalizar conversación sobre menú)
-- "¡Nos vemos pronto!" (despedida tras reserva)
-- "¡Ole!" (cuando confirman una buena elección)
-- "De lujo" (para confirmar algo excelente)
-
-Mantén siempre un servicio de calidad que refleje la calidez y excelencia de la gastronomía española.
-""".strip()
+# Inicializar DB al importar
+init_database()
 
 @tool
 def create_reservation(date: str, time: str, num_people: int, customer_name: str, phone: str, special_occasion: str = "", preferences: str = "") -> str:
@@ -274,7 +116,7 @@ def create_reservation(date: str, time: str, num_people: int, customer_name: str
     reservation_id = f"RES-{date_part}-{unique_part}"
 
     # Database connection
-    conn = sqlite3.connect("reservations.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # Create the reservations table if it doesn't exist
@@ -842,124 +684,3 @@ def get_reservation_details(reservation_id: str) -> str:
     except sqlite3.Error as e:
         conn.close()
         return f"❌ Error al obtener los detalles: {str(e)}"
-    
-
-# ============================================
-# CLASE PRINCIPAL - ADAPTADA PARA WHATSAPP
-# ============================================
-
-class RestaurantAgentManager:
-    """
-    Gestor de agentes que maneja múltiples sesiones de WhatsApp.
-    Cada número de teléfono tiene su propio agente con memoria persistente.
-    """
-    
-    def __init__(self):
-        self.agents: Dict[str, Agent] = {}  # Cache de agentes por teléfono
-        self.system_prompt = SYSTEM_PROMPT
-        
-        # Herramientas disponibles para todos los agentes
-        self.tools = [
-            calculator,
-            current_time,
-            create_reservation,
-            list_reservations,
-            update_reservation,
-            cancel_reservation,
-            get_reservation_details
-        ]
-    
-    def _sanitize_phone_number(self, phone: str) -> str:
-        """
-        Convierte número de WhatsApp a formato limpio.
-        Ejemplo: 'whatsapp:+34612345678' -> '34612345678'
-        """
-        phone = phone.replace("whatsapp:", "").replace("+", "").replace(" ", "")
-        return phone
-    
-    def _get_or_create_agent(self, phone_number: str) -> Agent:
-        """
-        Obtiene un agente existente o crea uno nuevo para el usuario.
-        Cada usuario tiene su propia sesión de memoria.
-        """
-        clean_phone = self._sanitize_phone_number(phone_number)
-        
-        # Si ya existe el agente en cache, devolverlo
-        if clean_phone in self.agents:
-            return self.agents[clean_phone]
-        
-        # Crear nueva sesión para este usuario
-        session_id = f"whatsapp_session_{clean_phone}"
-        actor_id = f"whatsapp_user_{clean_phone}"
-        
-        # Configurar memoria persistente
-        memory_config = AgentCoreMemoryConfig(
-            memory_id=MEMORY_ID,
-            session_id=session_id,
-            actor_id=actor_id
-        )
-        
-        session_manager = AgentCoreMemorySessionManager(
-            agentcore_memory_config=memory_config,
-            region_name=AWS_REGION
-        )
-        
-        # Crear nuevo agente
-        agent = Agent(
-            model="eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            system_prompt=self.system_prompt,
-            session_manager=session_manager,
-            tools=self.tools
-        )
-        
-        # Guardar en cache
-        self.agents[clean_phone] = agent
-        
-        print(f"✅ Nuevo agente creado para: {clean_phone}")
-        return agent
-    
-    def process_message(self, phone_number: str, message: str) -> str:
-        """
-        Procesa un mensaje de WhatsApp y devuelve la respuesta.
-        
-        Args:
-            phone_number: Número de WhatsApp del usuario (formato: whatsapp:+34...)
-            message: Mensaje de texto del usuario
-            
-        Returns:
-            str: Respuesta del agente
-        """
-        try:
-            # Obtener o crear agente para este usuario
-            agent = self._get_or_create_agent(phone_number)
-            
-            # Procesar mensaje
-            results = agent(message)
-            response = results.message['content'][0]['text']
-            
-            # Limitar longitud de respuesta para WhatsApp (máx 1600 caracteres)
-            if len(response) > 1600:
-                response = response[:1590] + "...\n\n(Mensaje completo en próxima respuesta)"
-            
-            return response
-            
-        except Exception as e:
-            print(f"❌ Error procesando mensaje de {phone_number}: {str(e)}")
-            return "Lo siento, ha ocurrido un error temporal. Por favor, intenta de nuevo en unos momentos. 🙏"
-    
-    def clear_user_session(self, phone_number: str):
-        """
-        Limpia la sesión de un usuario específico.
-        Útil para testing o resetear conversaciones.
-        """
-        clean_phone = self._sanitize_phone_number(phone_number)
-        if clean_phone in self.agents:
-            del self.agents[clean_phone]
-            print(f"🗑️ Sesión eliminada para: {clean_phone}")
-
-# ============================================
-# INSTANCIA GLOBAL
-# ============================================
-
-# Crear instancia única que se usará en toda la aplicación
-agent_manager = RestaurantAgentManager()
