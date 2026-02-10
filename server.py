@@ -175,11 +175,13 @@ async def validate_twilio_request(request: Request) -> bool:
     try:
         logger.info(f"Request headers: {request.headers}")
         # Obtener la firma de Twilio
-        signature = request.headers.get("X-Twilio-Signature", "")
-        
+        signature = request.headers.get("x-twilio-signature", "")
+        logger.info(f"Signature: {url}")
+
         # Obtener la URL completa del request
         url = str(request.url)
         
+        logger.info(f"Request URL: {url}")
         # Obtener los parámetros del formulario
         form_data = await request.form()
         params = {key: value for key, value in form_data.items()}
@@ -187,6 +189,7 @@ async def validate_twilio_request(request: Request) -> bool:
         # Validar con el validador de Twilio
         validator = RequestValidator(TWILIO_AUTH_TOKEN)
         is_valid = validator.validate(url, params, signature)
+        logger.info(f"is_valid: {is_valid}")
         
         return is_valid
         
