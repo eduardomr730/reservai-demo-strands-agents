@@ -11,6 +11,7 @@ from app.config import settings
 from app.agent.manager import agent_manager
 from app.agent.prompts import ERROR_MESSAGES
 from app.middleware.validation import twilio_validator
+from app.database.dynamodb_client import db_client
 
 # Configurar logging
 logging.basicConfig(
@@ -185,39 +186,25 @@ async def test_message(phone: str = Form(...), message: str = Form(...)):
 async def get_stats():
     """Obtener estadísticas básicas del servidor."""
     try:
-        import sqlite3
-        from app.config import settings
+        from collections import Counter
         
-        conn = sqlite3.connect(settings.database_path)
-        cursor = conn.cursor()
+        # Obtener todas las reservas
+        all_reservations = db_client.scan_all_reservations()
         
-        # Contar reservas por estado
-        cursor.execute("""
-            SELECT status, COUNT(*) 
-            FROM reservations 
-            GROUP BY status
-        """)
-        reservations_by_status = dict(cursor.fetchall())
+        # Contar por estado
+        statuses = [r.get('status') for r in all_reservations]
+        reservations_by_status = dict(Counter(statuses))
         
-        # Total de reservas
-        cursor.execute("SELECT COUNT(*) FROM reservations")
-        total_reservations = cursor.fetchone()[0]
-        
-        # Reservas hoy
-        cursor.execute("""
-            SELECT COUNT(*) FROM reservations 
-            WHERE date = date('now')
-        """)
-        today_reservations = cursor.fetchone()[0]
-        
-        conn.close()
+        # Reservas de hoy
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_reservations = db_client.query_reservations_by_date(today)
         
         return {
             "status": "success",
             "timestamp": datetime.now().isoformat(),
             "stats": {
-                "total_reservations": total_reservations,
-                "today_reservations": today_reservations,
+                "total_reservations": len(all_reservations),
+                "today_reservations": len(today_reservations),
                 "by_status": reservations_by_status,
                 "active_users": agent_manager.get_active_sessions_count()
             }

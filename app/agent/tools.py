@@ -1,57 +1,28 @@
 """
-Herramientas (tools) para el agente.
+Herramientas (tools) para el agente - usando DynamoDB.
 """
-import os
-import sqlite3
 import uuid
 import json
 from datetime import datetime
-from pathlib import Path
+from typing import Optional
 from strands import tool
+from app.database.dynamodb_client import db_client
 from app.config import settings
 
-# Asegurar que existe la carpeta data
-Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
-
-
-def get_db_connection():
-    """Obtener conexión a la base de datos."""
-    conn = sqlite3.connect(settings.database_path)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_database():
-    """Inicializar base de datos con tabla de reservas."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS reservations (
-            id TEXT PRIMARY KEY,
-            date TEXT NOT NULL,
-            time TEXT NOT NULL,
-            num_people INTEGER NOT NULL,
-            customer_name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            special_occasion TEXT,
-            preferences TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    conn.commit()
-    conn.close()
-
-
-# Inicializar DB al importar
-init_database()
 
 @tool
-def create_reservation(date: str, time: str, num_people: int, customer_name: str, phone: str, special_occasion: str = "", preferences: str = "") -> str:
+def create_reservation(
+    date: str,
+    time: str,
+    num_people: int,
+    customer_name: str,
+    phone: str,
+    special_occasion: str = "",
+    preferences: str = ""
+) -> str:
     """
-    Create a new restaurant reservation in the database.
-
+    Create a new restaurant reservation in DynamoDB.
+    
     Args:
         date (str): Date of the reservation (format: YYYY-MM-DD).
         time (str): Time of the reservation (format: HH:MM, must be within restaurant hours).
@@ -68,25 +39,25 @@ def create_reservation(date: str, time: str, num_people: int, customer_name: str
         ValueError: If date/time format is invalid or restaurant is closed.
         ValueError: If number of people exceeds capacity or is invalid.
     """
-    # Validate date format
+    # Validar fecha
     try:
         reservation_date = datetime.strptime(date, "%Y-%m-%d")
-        day_of_week = reservation_date.weekday()  # 0=Monday, 6=Sunday
+        day_of_week = reservation_date.weekday()
     except ValueError:
         raise ValueError("Date must be in format 'YYYY-MM-DD'")
-
-    # Validate time format
+    
+    # Validar hora
     try:
         reservation_time = datetime.strptime(time, "%H:%M")
         hour = reservation_time.hour
         minute = reservation_time.minute
     except ValueError:
         raise ValueError("Time must be in format 'HH:MM'")
-
+    
     # Check if restaurant is closed (Monday = 0)
     if day_of_week == 0:
         raise ValueError("Lo sentimos, el restaurante está cerrado los lunes. Por favor elige otro día.")
-
+    
     # Validate restaurant hours based on day
     if day_of_week in [1, 2, 3, 4]:  # Tuesday to Friday
         valid_lunch = (13 <= hour < 16) or (hour == 16 and minute == 0)
@@ -99,57 +70,41 @@ def create_reservation(date: str, time: str, num_people: int, customer_name: str
     elif day_of_week == 6:  # Sunday
         if not (13 <= hour < 18):
             raise ValueError("Horario no disponible. Domingos: 13:00-18:00")
-
+    
     # Validate number of people
     if not isinstance(num_people, int) or num_people < 1:
         raise ValueError("El número de personas debe ser al menos 1")
     if num_people > 20:
         raise ValueError("Para grupos mayores a 20 personas, por favor contacta directamente al restaurante")
-
-    # Validate phone format (basic validation)
+    
+    # Validate phone
     if not phone or len(phone) < 9:
         raise ValueError("Por favor proporciona un número de teléfono válido")
-
-    # Generate a unique reservation ID (format: RES-YYYYMMDD-XXXX)
+    
+    # Generate reservation ID
     date_part = reservation_date.strftime("%Y%m%d")
     unique_part = str(uuid.uuid4())[:8].upper()
     reservation_id = f"RES-{date_part}-{unique_part}"
-
-    # Database connection
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Create the reservations table if it doesn't exist
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS reservations (
-            id TEXT PRIMARY KEY,
-            date TEXT NOT NULL,
-            time TEXT NOT NULL,
-            num_people INTEGER NOT NULL,
-            customer_name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            special_occasion TEXT,
-            preferences TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    # Insert the reservation
-    cursor.execute(
-        """
-        INSERT INTO reservations 
-        (id, date, time, num_people, customer_name, phone, special_occasion, preferences, status) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (reservation_id, date, time, num_people, customer_name, phone, special_occasion, preferences, "pending")
-    )
-
-    conn.commit()
-    conn.close()
-
+    
+    # Create reservation object
+    reservation = {
+        'id': reservation_id,
+        'date': date,
+        'time': time,
+        'num_people': num_people,
+        'customer_name': customer_name,
+        'phone': phone,
+        'special_occasion': special_occasion,
+        'preferences': preferences,
+        'status': 'pending'
+    }
+    
+    # Save to DynamoDB
+    success = db_client.put_reservation(reservation)
+    
+    if not success:
+        raise Exception("Error al guardar la reserva. Por favor intenta de nuevo.")
+    
     # Format confirmation message
     occasion_text = f"\n🎉 Ocasión especial: {special_occasion}" if special_occasion else ""
     preferences_text = f"\n📝 Preferencias: {preferences}" if preferences else ""
@@ -173,10 +128,11 @@ Nuestro equipo te confirmará la reserva por WhatsApp en las próximas 2 horas.
     
     return confirmation_message.strip()
 
+
 @tool
 def list_reservations(date: str = "", status: str = "all", customer_name: str = "") -> str:
     """
-    List all restaurant reservations from the database with optional filters.
+    List all restaurant reservations from DynamoDB with optional filters.
     
     Args:
         date (str, optional): Filter by specific date (format: YYYY-MM-DD). Leave empty for all dates.
@@ -186,59 +142,41 @@ def list_reservations(date: str = "", status: str = "all", customer_name: str = 
     Returns:
         str: JSON string with the list of reservations or a message if none found.
     """
-    # Check if database exists
-    if not os.path.exists('reservations.db'):
-        return "No hay reservas disponibles en el sistema"
-    
-    conn = sqlite3.connect('reservations.db')
-    conn.row_factory = sqlite3.Row  # This enables column access by name
-    cursor = conn.cursor()
-    
-    # Check if the reservations table exists
     try:
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='reservations'")
-        if not cursor.fetchone():
-            conn.close()
-            return "No hay reservas disponibles en el sistema"
+        reservations = []
         
-        # Build dynamic query based on filters
-        query = "SELECT * FROM reservations WHERE 1=1"
-        params = []
-        
-        # Filter by date
+        # Si hay filtro de fecha, usar query optimizado
         if date:
             try:
-                # Validate date format
                 datetime.strptime(date, "%Y-%m-%d")
-                query += " AND date = ?"
-                params.append(date)
+                reservations = db_client.query_reservations_by_date(date)
             except ValueError:
-                conn.close()
                 return "Formato de fecha inválido. Usa YYYY-MM-DD"
         
-        # Filter by status
-        if status.lower() != "all":
+        # Si hay filtro de estado pero no de fecha
+        elif status.lower() != "all":
             if status.lower() in ['pending', 'confirmed', 'cancelled']:
-                query += " AND status = ?"
-                params.append(status.lower())
+                reservations = db_client.query_reservations_by_status(status.lower())
             else:
-                conn.close()
                 return "Estado inválido. Usa: 'pending', 'confirmed', 'cancelled' o 'all'"
         
-        # Filter by customer name (partial match, case-insensitive)
-        if customer_name:
-            query += " AND LOWER(customer_name) LIKE ?"
-            params.append(f"%{customer_name.lower()}%")
+        # Si hay filtro de nombre de cliente (scan completo)
+        elif customer_name:
+            all_reservations = db_client.scan_all_reservations()
+            reservations = [
+                r for r in all_reservations 
+                if customer_name.lower() in r.get('customer_name', '').lower()
+            ]
         
-        # Order by date and time
-        query += " ORDER BY date, time"
+        # Sin filtros: scan completo
+        else:
+            reservations = db_client.scan_all_reservations()
         
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+        # Filtrar por status si es necesario (para queries que no lo hicieron)
+        if status.lower() != "all" and date:
+            reservations = [r for r in reservations if r.get('status') == status.lower()]
         
-        # If no reservations found
-        if not rows:
-            conn.close()
+        if not reservations:
             filter_msg = []
             if date:
                 filter_msg.append(f"fecha {date}")
@@ -251,10 +189,9 @@ def list_reservations(date: str = "", status: str = "all", customer_name: str = 
                 return f"No se encontraron reservas con los filtros: {', '.join(filter_msg)}"
             return "No hay reservas registradas en el sistema"
         
-        # Convert rows to dictionaries with enhanced formatting
-        reservations = []
-        for row in rows:
-            # Format date for better readability
+        # Formatear reservas
+        formatted_reservations = []
+        for row in reservations:
             try:
                 date_obj = datetime.strptime(row['date'], "%Y-%m-%d")
                 formatted_date = date_obj.strftime("%d/%m/%Y")
@@ -263,12 +200,11 @@ def list_reservations(date: str = "", status: str = "all", customer_name: str = 
             except:
                 full_date = row['date']
             
-            # Status emoji
             status_emoji = {
                 'pending': '⏳',
                 'confirmed': '✅',
                 'cancelled': '❌'
-            }.get(row['status'], '📋')
+            }.get(row.get('status'), '📋')
             
             reservation = {
                 'id': row['id'],
@@ -278,33 +214,30 @@ def list_reservations(date: str = "", status: str = "all", customer_name: str = 
                 'num_people': row['num_people'],
                 'customer_name': row['customer_name'],
                 'phone': row['phone'],
-                'special_occasion': row['special_occasion'] or '',
-                'preferences': row['preferences'] or '',
+                'special_occasion': row.get('special_occasion', ''),
+                'preferences': row.get('preferences', ''),
                 'status': row['status'],
                 'status_display': f"{status_emoji} {row['status'].capitalize()}",
-                'created_at': row['created_at']
+                'created_at': row.get('created_at', '')
             }
-            reservations.append(reservation)
+            formatted_reservations.append(reservation)
         
-        conn.close()
-        
-        # Create a summary header
         summary = {
-            'total_reservations': len(reservations),
+            'total_reservations': len(formatted_reservations),
             'filters_applied': {
                 'date': date if date else 'todas las fechas',
                 'status': status,
                 'customer_name': customer_name if customer_name else 'todos los clientes'
             },
-            'reservations': reservations
+            'reservations': formatted_reservations
         }
         
         return json.dumps(summary, ensure_ascii=False, indent=2)
     
-    except sqlite3.Error as e:
-        conn.close()
+    except Exception as e:
         return f"Error al consultar las reservas: {str(e)}"
-    
+
+
 @tool
 def update_reservation(
     reservation_id: str,
@@ -335,182 +268,196 @@ def update_reservation(
     Raises:
         ValueError: If reservation ID doesn't exist or validation fails.
     """
-    # Check if database exists
-    if not os.path.exists('reservations.db'):
-        return "❌ No hay reservas en el sistema"
+    # Obtener reserva actual
+    existing_reservation = db_client.get_reservation(reservation_id)
     
-    conn = sqlite3.connect('reservations.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    if not existing_reservation:
+        return f"❌ No se encontró la reserva con ID: {reservation_id}"
     
-    try:
-        # Check if reservation exists
-        cursor.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,))
-        existing_reservation = cursor.fetchone()
-        
-        if not existing_reservation:
-            conn.close()
-            return f"❌ No se encontró la reserva con ID: {reservation_id}"
-        
-        # Prepare update fields
-        updates = []
-        params = []
-        changes_made = []
-        
-        # Validate and update date
-        if new_date:
-            try:
-                reservation_date = datetime.strptime(new_date, "%Y-%m-%d")
-                day_of_week = reservation_date.weekday()
-                
-                # Check if restaurant is closed (Monday = 0)
-                if day_of_week == 0:
-                    conn.close()
-                    return "❌ El restaurante está cerrado los lunes. Por favor elige otro día."
-                
-                updates.append("date = ?")
-                params.append(new_date)
-                changes_made.append(f"📅 Fecha: {existing_reservation['date']} → {new_date}")
-            except ValueError:
-                conn.close()
-                return "❌ Formato de fecha inválido. Usa YYYY-MM-DD"
-        
-        # Validate and update time
-        if new_time:
-            try:
-                reservation_time = datetime.strptime(new_time, "%H:%M")
-                hour = reservation_time.hour
-                minute = reservation_time.minute
-                
-                # Use existing date or new date for validation
-                check_date = new_date if new_date else existing_reservation['date']
-                day_of_week = datetime.strptime(check_date, "%Y-%m-%d").weekday()
-                
-                # Validate restaurant hours based on day
-                valid_time = False
-                error_msg = ""
-                
-                if day_of_week in [1, 2, 3, 4]:  # Tuesday to Friday
-                    valid_lunch = (13 <= hour < 16) or (hour == 16 and minute == 0)
-                    valid_dinner = (20 <= hour < 23) or (hour == 23 and minute <= 30)
-                    valid_time = valid_lunch or valid_dinner
-                    error_msg = "Horario no disponible. Martes a Viernes: 13:00-16:00 y 20:00-23:30"
-                elif day_of_week == 5:  # Saturday
-                    valid_time = (13 <= hour < 24) or (hour == 0 and minute == 0)
-                    error_msg = "Horario no disponible. Sábados: 13:00-00:00"
-                elif day_of_week == 6:  # Sunday
-                    valid_time = (13 <= hour < 18)
-                    error_msg = "Horario no disponible. Domingos: 13:00-18:00"
-                
-                if not valid_time:
-                    conn.close()
-                    return f"❌ {error_msg}"
-                
-                updates.append("time = ?")
-                params.append(new_time)
-                changes_made.append(f"🕐 Hora: {existing_reservation['time']} → {new_time}")
-            except ValueError:
-                conn.close()
-                return "❌ Formato de hora inválido. Usa HH:MM"
-        
-        # Validate and update number of people
-        if new_num_people > 0:
-            if new_num_people < 1:
-                conn.close()
-                return "❌ El número de personas debe ser al menos 1"
-            if new_num_people > 20:
-                conn.close()
-                return "❌ Para grupos mayores a 20 personas, contacta directamente al restaurante"
+    updates = {}
+    changes_made = []
+    
+    # ============================================
+    # VALIDAR Y PREPARAR NUEVA FECHA
+    # ============================================
+    if new_date:
+        try:
+            reservation_date = datetime.strptime(new_date, "%Y-%m-%d")
+            day_of_week = reservation_date.weekday()
             
-            updates.append("num_people = ?")
-            params.append(new_num_people)
-            changes_made.append(f"👥 Personas: {existing_reservation['num_people']} → {new_num_people}")
-        
-        # Update phone
-        if new_phone:
-            if len(new_phone) < 9:
-                conn.close()
-                return "❌ Número de teléfono inválido"
+            # Check if restaurant is closed (Monday = 0)
+            if day_of_week == 0:
+                return "❌ El restaurante está cerrado los lunes. Por favor elige otro día."
             
-            updates.append("phone = ?")
-            params.append(new_phone)
-            changes_made.append(f"📞 Teléfono: {existing_reservation['phone']} → {new_phone}")
-        
-        # Update special occasion
-        if new_special_occasion:
-            updates.append("special_occasion = ?")
-            params.append(new_special_occasion)
-            old_occasion = existing_reservation['special_occasion'] or 'Ninguna'
-            changes_made.append(f"🎉 Ocasión especial: {old_occasion} → {new_special_occasion}")
-        
-        # Update preferences
-        if new_preferences:
-            updates.append("preferences = ?")
-            params.append(new_preferences)
-            old_prefs = existing_reservation['preferences'] or 'Ninguna'
-            changes_made.append(f"📝 Preferencias: {old_prefs} → {new_preferences}")
-        
-        # Update status
-        if status:
-            status_lower = status.lower()
-            if status_lower not in ['pending', 'confirmed', 'cancelled']:
-                conn.close()
-                return "❌ Estado inválido. Usa: 'pending', 'confirmed' o 'cancelled'"
+            updates['date'] = new_date
+            changes_made.append(f"📅 Fecha: {existing_reservation['date']} → {new_date}")
+        except ValueError:
+            return "❌ Formato de fecha inválido. Usa YYYY-MM-DD"
+    
+    # ============================================
+    # VALIDAR Y PREPARAR NUEVA HORA
+    # ============================================
+    if new_time:
+        try:
+            reservation_time = datetime.strptime(new_time, "%H:%M")
+            hour = reservation_time.hour
+            minute = reservation_time.minute
             
-            updates.append("status = ?")
-            params.append(status_lower)
+            # Usar nueva fecha si existe, sino usar la existente
+            check_date = new_date if new_date else existing_reservation['date']
+            day_of_week = datetime.strptime(check_date, "%Y-%m-%d").weekday()
             
-            status_emoji = {
-                'pending': '⏳ Pendiente',
-                'confirmed': '✅ Confirmada',
-                'cancelled': '❌ Cancelada'
-            }
+            # Validar horario según día
+            valid_time = False
+            error_msg = ""
             
-            old_status = status_emoji.get(existing_reservation['status'], existing_reservation['status'])
-            new_status = status_emoji.get(status_lower, status_lower)
-            changes_made.append(f"Estado: {old_status} → {new_status}")
+            if day_of_week in [1, 2, 3, 4]:  # Tuesday to Friday
+                valid_lunch = (13 <= hour < 16) or (hour == 16 and minute == 0)
+                valid_dinner = (20 <= hour < 23) or (hour == 23 and minute <= 30)
+                valid_time = valid_lunch or valid_dinner
+                error_msg = "Horario no disponible. Martes a Viernes: 13:00-16:00 y 20:00-23:30"
+            elif day_of_week == 5:  # Saturday
+                valid_time = (13 <= hour < 24) or (hour == 0 and minute == 0)
+                error_msg = "Horario no disponible. Sábados: 13:00-00:00"
+            elif day_of_week == 6:  # Sunday
+                valid_time = (13 <= hour < 18)
+                error_msg = "Horario no disponible. Domingos: 13:00-18:00"
+            
+            if not valid_time:
+                return f"❌ {error_msg}"
+            
+            updates['time'] = new_time
+            changes_made.append(f"🕐 Hora: {existing_reservation['time']} → {new_time}")
+        except ValueError:
+            return "❌ Formato de hora inválido. Usa HH:MM"
+    
+    # ============================================
+    # VALIDAR Y PREPARAR NUEVO NÚMERO DE PERSONAS
+    # ============================================
+    if new_num_people > 0:
+        if new_num_people < 1:
+            return "❌ El número de personas debe ser al menos 1"
+        if new_num_people > 20:
+            return "❌ Para grupos mayores a 20 personas, contacta directamente al restaurante"
         
-        # Check if there are changes to make
-        if not updates:
-            conn.close()
-            return "⚠️ No se especificaron cambios para realizar"
+        updates['num_people'] = new_num_people
+        changes_made.append(f"👥 Personas: {existing_reservation['num_people']} → {new_num_people}")
+    
+    # ============================================
+    # VALIDAR Y PREPARAR NUEVO TELÉFONO
+    # ============================================
+    if new_phone:
+        if len(new_phone) < 9:
+            return "❌ Número de teléfono inválido"
         
-        # Execute update
-        update_query = f"UPDATE reservations SET {', '.join(updates)} WHERE id = ?"
-        params.append(reservation_id)
+        updates['phone'] = new_phone
+        changes_made.append(f"📞 Teléfono: {existing_reservation['phone']} → {new_phone}")
+    
+    # ============================================
+    # PREPARAR NUEVA OCASIÓN ESPECIAL
+    # ============================================
+    if new_special_occasion:
+        updates['special_occasion'] = new_special_occasion
+        old_occasion = existing_reservation.get('special_occasion', '') or 'Ninguna'
+        changes_made.append(f"🎉 Ocasión especial: {old_occasion} → {new_special_occasion}")
+    
+    # ============================================
+    # PREPARAR NUEVAS PREFERENCIAS
+    # ============================================
+    if new_preferences:
+        updates['preferences'] = new_preferences
+        old_prefs = existing_reservation.get('preferences', '') or 'Ninguna'
+        changes_made.append(f"📝 Preferencias: {old_prefs} → {new_preferences}")
+    
+    # ============================================
+    # VALIDAR Y PREPARAR NUEVO ESTADO
+    # ============================================
+    if status:
+        status_lower = status.lower()
+        if status_lower not in ['pending', 'confirmed', 'cancelled']:
+            return "❌ Estado inválido. Usa: 'pending', 'confirmed' o 'cancelled'"
         
-        cursor.execute(update_query, params)
-        conn.commit()
+        updates['status'] = status_lower
         
-        # Get updated reservation
-        cursor.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,))
-        updated_reservation = cursor.fetchone()
-        conn.close()
-        
-        # Format confirmation message
         status_emoji_map = {
-            'pending': '⏳',
-            'confirmed': '✅',
-            'cancelled': '❌'
+            'pending': '⏳ Pendiente',
+            'confirmed': '✅ Confirmada',
+            'cancelled': '❌ Cancelada'
         }
         
-        status_display = f"{status_emoji_map.get(updated_reservation['status'], '📋')} {updated_reservation['status'].capitalize()}"
-        
-        # Format date
-        try:
-            date_obj = datetime.strptime(updated_reservation['date'], "%Y-%m-%d")
-            formatted_date = date_obj.strftime("%d/%m/%Y")
-            day_name = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][date_obj.weekday()]
-            full_date = f"{day_name}, {formatted_date}"
-        except:
-            full_date = updated_reservation['date']
-        
-        changes_text = "\n".join([f"  • {change}" for change in changes_made])
-        
-        occasion_text = f"\n🎉 Ocasión especial: {updated_reservation['special_occasion']}" if updated_reservation['special_occasion'] else ""
-        preferences_text = f"\n📝 Preferencias: {updated_reservation['preferences']}" if updated_reservation['preferences'] else ""
-        
-        confirmation_message = f"""
+        old_status = status_emoji_map.get(existing_reservation['status'], existing_reservation['status'])
+        new_status_display = status_emoji_map.get(status_lower, status_lower)
+        changes_made.append(f"📊 Estado: {old_status} → {new_status_display}")
+    
+    # ============================================
+    # VERIFICAR QUE HAY CAMBIOS
+    # ============================================
+    if not updates:
+        return "⚠️ No se especificaron cambios para realizar"
+    
+    # ============================================
+    # EJECUTAR UPDATE EN DYNAMODB
+    # ============================================
+    success = db_client.update_reservation(reservation_id, updates)
+    
+    if not success:
+        return "❌ Error al actualizar la reserva en la base de datos"
+    
+    # ============================================
+    # OBTENER RESERVA ACTUALIZADA
+    # ============================================
+    updated_reservation = db_client.get_reservation(reservation_id)
+    
+    if not updated_reservation:
+        return "❌ Error al recuperar la reserva actualizada"
+    
+    # ============================================
+    # FORMATEAR MENSAJE DE CONFIRMACIÓN
+    # ============================================
+    
+    # Formatear fecha legible
+    try:
+        date_obj = datetime.strptime(updated_reservation['date'], "%Y-%m-%d")
+        formatted_date = date_obj.strftime("%d/%m/%Y")
+        day_name = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][date_obj.weekday()]
+        full_date = f"{day_name}, {formatted_date}"
+    except:
+        full_date = updated_reservation['date']
+    
+    # Status display con emoji
+    status_emoji_map = {
+        'pending': '⏳',
+        'confirmed': '✅',
+        'cancelled': '❌'
+    }
+    status_emoji = status_emoji_map.get(updated_reservation['status'], '📋')
+    status_display = f"{status_emoji} {updated_reservation['status'].capitalize()}"
+    
+    # Lista de cambios realizados
+    changes_text = "\n".join([f"  • {change}" for change in changes_made])
+    
+    # Ocasión especial y preferencias (si existen)
+    occasion_text = ""
+    if updated_reservation.get('special_occasion'):
+        occasion_text = f"\n🎉 Ocasión especial: {updated_reservation['special_occasion']}"
+    
+    preferences_text = ""
+    if updated_reservation.get('preferences'):
+        preferences_text = f"\n📝 Preferencias: {updated_reservation['preferences']}"
+    
+    # Mensaje final según estado
+    final_message = ""
+    if updated_reservation['status'] == 'cancelled':
+        final_message = "\n\n⚠️ Esta reserva ha sido CANCELADA"
+    elif updated_reservation['status'] == 'confirmed':
+        final_message = "\n\n¡Te esperamos en El Rincón de Andalucía! 🇪🇸✨"
+    else:
+        final_message = "\n\n⏳ Reserva pendiente de confirmación"
+    
+    # ============================================
+    # CONSTRUIR MENSAJE COMPLETO
+    # ============================================
+    confirmation_message = f"""
 ✅ ¡Reserva actualizada exitosamente!
 
 📋 ID de Reserva: {reservation_id}
@@ -524,17 +471,12 @@ def update_reservation(
 🕐 Hora: {updated_reservation['time']}
 👥 Número de personas: {updated_reservation['num_people']}
 📞 Teléfono: {updated_reservation['phone']}{occasion_text}{preferences_text}
-📊 Estado: {status_display}
+📊 Estado: {status_display}{final_message}
+    """
+    
+    return confirmation_message.strip()
 
-{'⚠️ Esta reserva ha sido CANCELADA' if updated_reservation['status'] == 'cancelled' else '¡Te esperamos en El Rincón de Andalucía! 🇪🇸✨'}
-        """
-        
-        return confirmation_message.strip()
-    
-    except sqlite3.Error as e:
-        conn.close()
-        return f"❌ Error al actualizar la reserva: {str(e)}"
-    
+
 @tool
 def cancel_reservation(reservation_id: str, reason: str = "") -> str:
     """
@@ -547,55 +489,47 @@ def cancel_reservation(reservation_id: str, reason: str = "") -> str:
     Returns:
         str: Cancellation confirmation message.
     """
-    # Check if database exists
-    if not os.path.exists('reservations.db'):
-        return "❌ No hay reservas en el sistema"
+    # Obtener reserva actual
+    reservation = db_client.get_reservation(reservation_id)
     
-    conn = sqlite3.connect('reservations.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    if not reservation:
+        return f"❌ No se encontró la reserva con ID: {reservation_id}"
     
+    # Verificar si ya está cancelada
+    if reservation['status'] == 'cancelled':
+        return "⚠️ Esta reserva ya estaba cancelada previamente"
+    
+    # Preparar updates
+    updates = {'status': 'cancelled'}
+    
+    # Añadir razón a preferencias si existe
+    if reason:
+        current_prefs = reservation.get('preferences', '')
+        separator = " | " if current_prefs else ""
+        updates['preferences'] = f"{current_prefs}{separator}Motivo cancelación: {reason}"
+    
+    # Ejecutar update
+    success = db_client.update_reservation(reservation_id, updates)
+    
+    if not success:
+        return "❌ Error al cancelar la reserva"
+    
+    # Formatear fecha legible
     try:
-        # Check if reservation exists
-        cursor.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,))
-        reservation = cursor.fetchone()
-        
-        if not reservation:
-            conn.close()
-            return f"❌ No se encontró la reserva con ID: {reservation_id}"
-        
-        # Check if already cancelled
-        if reservation['status'] == 'cancelled':
-            conn.close()
-            return f"⚠️ Esta reserva ya estaba cancelada previamente"
-        
-        # Update status to cancelled
-        if reason:
-            cursor.execute(
-                "UPDATE reservations SET status = ?, preferences = ? WHERE id = ?",
-                ('cancelled', f"{reservation['preferences']} | Motivo cancelación: {reason}", reservation_id)
-            )
-        else:
-            cursor.execute(
-                "UPDATE reservations SET status = ? WHERE id = ?",
-                ('cancelled', reservation_id)
-            )
-        
-        conn.commit()
-        conn.close()
-        
-        # Format date
-        try:
-            date_obj = datetime.strptime(reservation['date'], "%Y-%m-%d")
-            formatted_date = date_obj.strftime("%d/%m/%Y")
-            day_name = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][date_obj.weekday()]
-            full_date = f"{day_name}, {formatted_date}"
-        except:
-            full_date = reservation['date']
-        
-        reason_text = f"\n💬 Motivo: {reason}" if reason else ""
-        
-        cancellation_message = f"""
+        date_obj = datetime.strptime(reservation['date'], "%Y-%m-%d")
+        formatted_date = date_obj.strftime("%d/%m/%Y")
+        day_name = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][date_obj.weekday()]
+        full_date = f"{day_name}, {formatted_date}"
+    except:
+        full_date = reservation['date']
+    
+    # Texto de razón (si existe)
+    reason_text = f"\n💬 Motivo: {reason}" if reason else ""
+    
+    # ============================================
+    # CONSTRUIR MENSAJE DE CANCELACIÓN
+    # ============================================
+    cancellation_message = f"""
 ❌ Reserva cancelada exitosamente
 
 📋 ID de Reserva: {reservation_id}
@@ -609,14 +543,11 @@ La reserva ha sido cancelada. Si deseas realizar una nueva reserva, estaremos en
 Política de cancelación: Sin cargo por cancelación con más de 12 horas de anticipación.
 
 ¡Esperamos verte pronto en El Rincón de Andalucía! 🇪🇸
-        """
-        
-        return cancellation_message.strip()
+    """
     
-    except sqlite3.Error as e:
-        conn.close()
-        return f"❌ Error al cancelar la reserva: {str(e)}"
-    
+    return cancellation_message.strip()
+
+
 @tool
 def get_reservation_details(reservation_id: str) -> str:
     """
@@ -628,41 +559,60 @@ def get_reservation_details(reservation_id: str) -> str:
     Returns:
         str: Detailed reservation information or error message.
     """
-    if not os.path.exists('reservations.db'):
-        return "❌ No hay reservas en el sistema"
+    # Obtener reserva
+    reservation = db_client.get_reservation(reservation_id)
     
-    conn = sqlite3.connect('reservations.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    if not reservation:
+        return f"❌ No se encontró la reserva con ID: {reservation_id}"
     
+    # Formatear fecha legible
     try:
-        cursor.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,))
-        reservation = cursor.fetchone()
-        conn.close()
-        
-        if not reservation:
-            return f"❌ No se encontró la reserva con ID: {reservation_id}"
-        
-        # Format date
+        date_obj = datetime.strptime(reservation['date'], "%Y-%m-%d")
+        formatted_date = date_obj.strftime("%d/%m/%Y")
+        day_name = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][date_obj.weekday()]
+        full_date = f"{day_name}, {formatted_date}"
+    except:
+        full_date = reservation['date']
+    
+    # Status display con emoji
+    status_emoji_map = {
+        'pending': '⏳ Pendiente',
+        'confirmed': '✅ Confirmada',
+        'cancelled': '❌ Cancelada'
+    }
+    status_display = status_emoji_map.get(reservation['status'], reservation['status'])
+    
+    # Ocasión especial (si existe)
+    occasion_text = ""
+    if reservation.get('special_occasion'):
+        occasion_text = f"\n🎉 Ocasión especial: {reservation['special_occasion']}"
+    
+    # Preferencias (si existen)
+    preferences_text = ""
+    if reservation.get('preferences'):
+        preferences_text = f"\n📝 Preferencias: {reservation['preferences']}"
+    
+    # Fecha de creación
+    created_at = reservation.get('created_at', 'N/A')
+    if created_at != 'N/A':
         try:
-            date_obj = datetime.strptime(reservation['date'], "%Y-%m-%d")
-            formatted_date = date_obj.strftime("%d/%m/%Y")
-            day_name = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][date_obj.weekday()]
-            full_date = f"{day_name}, {formatted_date}"
+            created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            created_at = created_dt.strftime("%d/%m/%Y %H:%M")
         except:
-            full_date = reservation['date']
-        
-        status_emoji = {
-            'pending': '⏳ Pendiente',
-            'confirmed': '✅ Confirmada',
-            'cancelled': '❌ Cancelada'
-        }
-        status_display = status_emoji.get(reservation['status'], reservation['status'])
-        
-        occasion_text = f"\n🎉 Ocasión especial: {reservation['special_occasion']}" if reservation['special_occasion'] else ""
-        preferences_text = f"\n📝 Preferencias: {reservation['preferences']}" if reservation['preferences'] else ""
-        
-        details = f"""
+            pass
+    
+    # Mensaje de estado final
+    if reservation['status'] == 'cancelled':
+        status_message = "\n\n⚠️ Esta reserva está CANCELADA"
+    elif reservation['status'] == 'confirmed':
+        status_message = "\n\n✨ Reserva confirmada y activa"
+    else:
+        status_message = "\n\n⏳ Pendiente de confirmación"
+    
+    # ============================================
+    # CONSTRUIR MENSAJE DE DETALLES
+    # ============================================
+    details = f"""
 📋 DETALLES DE LA RESERVA
 
 🆔 ID: {reservation['id']}
@@ -672,15 +622,7 @@ def get_reservation_details(reservation_id: str) -> str:
 🕐 Hora: {reservation['time']}
 👥 Número de personas: {reservation['num_people']}{occasion_text}{preferences_text}
 📊 Estado: {status_display}
-🗓️ Creada el: {reservation['created_at']}
-
-{('⚠️ Esta reserva está CANCELADA' if reservation['status'] == 'cancelled' 
-  else '✨ Reserva activa' if reservation['status'] == 'confirmed' 
-  else '⏳ Pendiente de confirmación')}
-        """
-        
-        return details.strip()
+🗓️ Creada el: {created_at}{status_message}
+    """
     
-    except sqlite3.Error as e:
-        conn.close()
-        return f"❌ Error al obtener los detalles: {str(e)}"
+    return details.strip()

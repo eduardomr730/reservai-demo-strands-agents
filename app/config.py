@@ -1,9 +1,8 @@
 """
 Configuración centralizada de la aplicación.
 """
-import os
-from functools import lru_cache
 from pydantic_settings import BaseSettings
+from functools import lru_cache
 from typing import Literal
 
 
@@ -33,8 +32,9 @@ class Settings(BaseSettings):
     agentcore_memory_id: str
     agent_model: str = "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
     
-    # Database
-    database_path: str = "data/reservations.db"
+    # DynamoDB
+    dynamodb_table_name: str = "restaurant-reservations"
+    dynamodb_region: str = "eu-west-1"
     
     # Logging
     log_level: str = "INFO"
