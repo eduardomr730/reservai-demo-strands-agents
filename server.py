@@ -173,6 +173,7 @@ async def validate_twilio_request(request: Request) -> bool:
     Verifica la firma X-Twilio-Signature.
     """
     try:
+        logger.info(f"validate_twilio_request request: {request}")
         # Obtener la firma de Twilio
         signature = request.headers.get("X-Twilio-Signature", "")
         
