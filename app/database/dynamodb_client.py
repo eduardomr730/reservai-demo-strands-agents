@@ -74,7 +74,15 @@ class DynamoDBClient:
         return converted
 
     def _serialize_item(self, item: dict) -> dict:
-        return {k: self._serializer.serialize(v) for k, v in item.items() if v is not None}
+        serialized = {}
+        for key, value in item.items():
+            if value is None:
+                continue
+            if key in {"PK", "SK", "GSI1PK", "GSI1SK"}:
+                serialized[key] = {"S": str(value)}
+                continue
+            serialized[key] = self._serializer.serialize(value)
+        return serialized
 
     def _serialize_value(self, value):
         return self._serializer.serialize(value)
@@ -315,6 +323,8 @@ class DynamoDBClient:
             reasons = e.response.get("CancellationReasons", [])
             if reasons:
                 logger.error(f"❌ CancellationReasons: {reasons}")
+            if actions:
+                logger.error(f"❌ First TransactItem payload: {actions[0]}")
             raise
 
     def _prepare_reservation_defaults(self, reservation: dict) -> dict:
