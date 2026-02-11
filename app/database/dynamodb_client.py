@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 from app.config import settings
 
@@ -16,7 +17,15 @@ class DynamoDBClient:
     """Thin wrapper around boto3 DynamoDB table operations."""
 
     def __init__(self) -> None:
-        self.resource = boto3.resource("dynamodb", region_name=settings.dynamodb_region)
+        session_kwargs: dict[str, str] = {
+            "region_name": settings.dynamodb_region,
+            "aws_access_key_id": settings.aws_access_key_id,
+            "aws_secret_access_key": settings.aws_secret_access_key,
+        }
+        if settings.aws_session_token:
+            session_kwargs["aws_session_token"] = settings.aws_session_token
+
+        self.resource = boto3.resource("dynamodb", **session_kwargs)
         self.table = self.resource.Table(settings.dynamodb_table_name)
         logger.info("DynamoDB client ready for table: %s", settings.dynamodb_table_name)
 
@@ -44,6 +53,13 @@ class DynamoDBClient:
         try:
             self.table.put_item(**kwargs)
             return True
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ConditionalCheckFailedException":
+                # Expected in optimistic writes (e.g. slot already taken).
+                return False
+            logger.error("DynamoDB put_item failed: %s", str(exc))
+            return False
         except Exception as exc:  # noqa: BLE001
             logger.error("DynamoDB put_item failed: %s", str(exc))
             return False
@@ -64,6 +80,13 @@ class DynamoDBClient:
         try:
             self.table.delete_item(**kwargs)
             return True
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ConditionalCheckFailedException":
+                # Expected when conditional delete does not match.
+                return False
+            logger.error("DynamoDB delete_item failed: %s", str(exc))
+            return False
         except Exception as exc:  # noqa: BLE001
             logger.error("DynamoDB delete_item failed: %s", str(exc))
             return False

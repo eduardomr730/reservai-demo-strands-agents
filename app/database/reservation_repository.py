@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 ACTIVE_STATUSES = {"pending", "confirmed"}
 VALID_STATUSES = {"pending", "confirmed", "cancelled"}
 SLOT_MINUTES = 30
+DEFAULT_RESERVATION_DURATION_MINUTES = 90
 
 DEFAULT_TABLES: list[dict[str, Any]] = [
     {"table_id": "S1", "zone": "salon", "capacity_min": 1, "capacity_max": 2, "priority": 1, "is_active": True},
@@ -75,11 +76,8 @@ class ReservationRepository:
         return None
 
     def _reservation_duration(self, num_people: int) -> int:
-        if num_people <= 2:
-            return 90
-        if num_people <= 6:
-            return 120
-        return 150
+        _ = num_people
+        return DEFAULT_RESERVATION_DURATION_MINUTES
 
     def _slot_keys(self, date: str, time: str, duration_minutes: int) -> list[str]:
         start = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
@@ -403,7 +401,11 @@ class ReservationRepository:
                 return False, error, None
 
         if current_active and current.get("table_id"):
-            old_slots = self._slot_keys(current["date"], current["time"], int(current.get("duration_min", 120)))
+            old_slots = self._slot_keys(
+                current["date"],
+                current["time"],
+                int(current.get("duration_min", DEFAULT_RESERVATION_DURATION_MINUTES)),
+            )
             if target_active:
                 keep = {f"SLOT#{slot}" for slot in new_slot_keys if current.get("table_id") == merged.get("table_id")}
                 release = [slot for slot in old_slots if f"SLOT#{slot}" not in keep]

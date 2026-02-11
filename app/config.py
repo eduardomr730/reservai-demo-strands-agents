@@ -2,12 +2,19 @@
 Configuración centralizada de la aplicación.
 """
 from pydantic_settings import BaseSettings
+from pydantic_settings import SettingsConfigDict
 from functools import lru_cache
 from typing import Literal
 
 
 class Settings(BaseSettings):
     """Configuración de la aplicación."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
     
     # Entorno
     environment: Literal["development", "production", "test"] = "production"
@@ -27,6 +34,7 @@ class Settings(BaseSettings):
     aws_region: str = "eu-west-1"
     aws_access_key_id: str
     aws_secret_access_key: str
+    aws_session_token: str = ""
     
     # Agente
     agentcore_memory_id: str
@@ -43,10 +51,6 @@ class Settings(BaseSettings):
     max_message_length: int = 1600
     max_reservations_per_query: int = 50
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-
 
 @lru_cache()
 def get_settings() -> Settings:
