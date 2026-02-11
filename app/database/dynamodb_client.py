@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Tuple
 from datetime import datetime, timedelta
 from decimal import Decimal
 from boto3.dynamodb.conditions import Key, Attr
-from boto3.dynamodb.types import TypeSerializer
+from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 from botocore.exceptions import ClientError
 
 from app.config import settings
@@ -45,6 +45,7 @@ class DynamoDBClient:
         self.table = self.dynamodb.Table(settings.dynamodb_table_name)
         self._ddb_client = self.dynamodb.meta.client
         self._serializer = TypeSerializer()
+        self._deserializer = TypeDeserializer()
         logger.info(f"✅ DynamoDB client inicializado para tabla: {settings.dynamodb_table_name}")
         self._ensure_table_catalog()
 
@@ -87,6 +88,9 @@ class DynamoDBClient:
 
     def _serialize_value(self, value):
         return self._serializer.serialize(value)
+
+    def _deserialize_av_map(self, av_map: dict) -> dict:
+        return {k: self._deserializer.deserialize(v) for k, v in av_map.items()}
 
     def _force_av_string(self, value) -> dict:
         if isinstance(value, dict):
@@ -392,7 +396,50 @@ class DynamoDBClient:
             logger.error(f"❌ Transact key debug: {debug_keys}")
             if normalized_actions:
                 logger.error(f"❌ First TransactItem payload: {normalized_actions[0]}")
+            err_msg = e.response.get("Error", {}).get("Message", "")
+            if "Type mismatch for key PK expected: S actual: M" in err_msg:
+                logger.warning("⚠️ Aplicando fallback no transaccional por incompatibilidad de tipo PK en TransactWrite")
+                self._fallback_non_transactional_write(normalized_actions)
+                return
             raise
+
+    def _fallback_non_transactional_write(self, normalized_actions: List[dict]) -> None:
+        """
+        Fallback defensivo: ejecuta operaciones con la API de alto nivel.
+        No es atómico, pero evita bloquear creación/actualización en entornos
+        donde TransactWrite responde con type mismatch inesperado en PK.
+        """
+        for action in normalized_actions:
+            put_spec = action.get("Put")
+            if put_spec:
+                kwargs = {
+                    "Item": self._deserialize_av_map(put_spec["Item"]),
+                }
+                if "ConditionExpression" in put_spec:
+                    kwargs["ConditionExpression"] = put_spec["ConditionExpression"]
+                if "ExpressionAttributeNames" in put_spec:
+                    kwargs["ExpressionAttributeNames"] = put_spec["ExpressionAttributeNames"]
+                if "ExpressionAttributeValues" in put_spec:
+                    kwargs["ExpressionAttributeValues"] = self._deserialize_av_map(
+                        put_spec["ExpressionAttributeValues"]
+                    )
+                self.table.put_item(**kwargs)
+                continue
+
+            delete_spec = action.get("Delete")
+            if delete_spec:
+                kwargs = {
+                    "Key": self._deserialize_av_map(delete_spec["Key"]),
+                }
+                if "ConditionExpression" in delete_spec:
+                    kwargs["ConditionExpression"] = delete_spec["ConditionExpression"]
+                if "ExpressionAttributeNames" in delete_spec:
+                    kwargs["ExpressionAttributeNames"] = delete_spec["ExpressionAttributeNames"]
+                if "ExpressionAttributeValues" in delete_spec:
+                    kwargs["ExpressionAttributeValues"] = self._deserialize_av_map(
+                        delete_spec["ExpressionAttributeValues"]
+                    )
+                self.table.delete_item(**kwargs)
 
     def _prepare_reservation_defaults(self, reservation: dict) -> dict:
         now = datetime.utcnow().isoformat()
