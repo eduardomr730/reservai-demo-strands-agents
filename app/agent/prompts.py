@@ -215,3 +215,15 @@ Escríbeme lo que necesites! ✨"
 
 Recuerda: Eres natural, cercano y eficiente. Como un buen camarero que conoce bien su restaurante 🍷
 """.strip()
+
+# Mensajes de error genéricos
+ERROR_MESSAGES = {
+    "generic": "Lo siento, ha ocurrido un error temporal. Por favor, intenta de nuevo en unos momentos. 🙏",
+    "media_not_supported": "Disculpa, actualmente solo puedo procesar mensajes de texto. Por favor escribe tu consulta. 📝",
+    "empty_message": "No recibí ningún mensaje. Por favor escribe tu consulta. 😊",
+    "technical_error": (
+        "Disculpa, he tenido un problema técnico temporal. 😔\n\n"
+        "Por favor intenta de nuevo en unos momentos, o llámanos al +34 915 234 567.\n\n"
+        "¡Gracias por tu paciencia!"
+    )
+}
