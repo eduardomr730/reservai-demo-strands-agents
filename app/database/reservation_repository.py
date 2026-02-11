@@ -17,6 +17,9 @@ ACTIVE_STATUSES = {"pending", "confirmed"}
 VALID_STATUSES = {"pending", "confirmed", "cancelled"}
 SLOT_MINUTES = 30
 DEFAULT_RESERVATION_DURATION_MINUTES = 90
+RESERVATION_RETENTION_DAYS = 180
+LOOKUP_RETENTION_DAYS = 30
+OCCUPANCY_RETENTION_DAYS = 2
 
 DEFAULT_TABLES: list[dict[str, Any]] = [
     {"table_id": "S1", "zone": "salon", "capacity_min": 1, "capacity_max": 2, "priority": 1, "is_active": True},
@@ -42,6 +45,10 @@ class ReservationRepository:
 
     def _now_iso(self) -> str:
         return datetime.now(UTC).isoformat()
+
+    def _ttl_from_reservation_datetime(self, date: str, time: str, keep_days: int) -> int:
+        base_dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
+        return int((base_dt + timedelta(days=keep_days)).timestamp())
 
     def _seed_tables(self) -> None:
         try:
@@ -200,6 +207,11 @@ class ReservationRepository:
         key = self._customer_key(
             reservation["phone"], reservation["date"], reservation["time"], reservation["id"]
         )
+        ttl_epoch = self._ttl_from_reservation_datetime(
+            reservation["date"],
+            reservation["time"],
+            LOOKUP_RETENTION_DAYS,
+        )
         self.client.put_item(
             {
                 **key,
@@ -208,6 +220,7 @@ class ReservationRepository:
                 "status": reservation["status"],
                 "date": reservation["date"],
                 "time": reservation["time"],
+                "ttl": ttl_epoch,
                 "updated_at": self._now_iso(),
             }
         )
@@ -227,7 +240,12 @@ class ReservationRepository:
 
         for slot_key in slot_keys:
             key = {"PK": f"TABLE#{table_id}", "SK": f"SLOT#{slot_key}"}
-            ttl_epoch = int((datetime.now(UTC) + timedelta(days=3)).timestamp())
+            slot_date, slot_time = slot_key.split("#", 1)
+            ttl_epoch = self._ttl_from_reservation_datetime(
+                slot_date,
+                slot_time,
+                OCCUPANCY_RETENTION_DAYS,
+            )
             ok = self.client.put_item(
                 {
                     **key,
@@ -261,6 +279,11 @@ class ReservationRepository:
             )
 
     def _build_reservation_item(self, reservation: dict[str, Any]) -> dict[str, Any]:
+        ttl_epoch = self._ttl_from_reservation_datetime(
+            reservation["date"],
+            reservation["time"],
+            RESERVATION_RETENTION_DAYS,
+        )
         return {
             **self._reservation_key(reservation["id"]),
             "entity_type": "reservation",
@@ -278,6 +301,7 @@ class ReservationRepository:
             "table_id": reservation.get("table_id", ""),
             "table_zone": reservation.get("table_zone", ""),
             "duration_min": reservation["duration_min"],
+            "ttl": ttl_epoch,
             "created_at": reservation["created_at"],
             "updated_at": reservation["updated_at"],
         }
