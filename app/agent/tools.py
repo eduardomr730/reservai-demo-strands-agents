@@ -53,6 +53,9 @@ def create_reservation(
         minute = reservation_time.minute
     except ValueError:
         raise ValueError("Time must be in format 'HH:MM'")
+
+    if minute not in (0, 30):
+        raise ValueError("Las reservas se gestionan en bloques de 30 minutos (ej: 20:00, 20:30, 21:00)")
     
     # Check if restaurant is closed (Monday = 0)
     if day_of_week == 0:
@@ -104,6 +107,12 @@ def create_reservation(
     
     if not success:
         raise Exception("Error al guardar la reserva. Por favor intenta de nuevo.")
+
+    saved_reservation = db_client.get_reservation(reservation_id) or {}
+    table_text = ""
+    if saved_reservation.get("table_id"):
+        zone = saved_reservation.get("table_zone", "salón")
+        table_text = f"\n🪑 Mesa asignada: {saved_reservation['table_id']} ({zone})"
     
     # Format confirmation message
     occasion_text = f"\n🎉 Ocasión especial: {special_occasion}" if special_occasion else ""
@@ -117,7 +126,7 @@ def create_reservation(
 📅 Fecha: {date}
 🕐 Hora: {time}
 👥 Número de personas: {num_people}
-📞 Teléfono: {phone}{occasion_text}{preferences_text}
+📞 Teléfono: {phone}{table_text}{occasion_text}{preferences_text}
 
 ⏳ Estado: Pendiente de confirmación
 
@@ -214,6 +223,8 @@ def list_reservations(date: str = "", status: str = "all", customer_name: str = 
                 'num_people': row['num_people'],
                 'customer_name': row['customer_name'],
                 'phone': row['phone'],
+                'table_id': row.get('table_id', ''),
+                'table_zone': row.get('table_zone', ''),
                 'special_occasion': row.get('special_occasion', ''),
                 'preferences': row.get('preferences', ''),
                 'status': row['status'],
@@ -302,6 +313,8 @@ def update_reservation(
             reservation_time = datetime.strptime(new_time, "%H:%M")
             hour = reservation_time.hour
             minute = reservation_time.minute
+            if minute not in (0, 30):
+                return "❌ Las reservas se gestionan en bloques de 30 minutos (ej: 20:00, 20:30, 21:00)"
             
             # Usar nueva fecha si existe, sino usar la existente
             check_date = new_date if new_date else existing_reservation['date']
@@ -440,7 +453,11 @@ def update_reservation(
     occasion_text = ""
     if updated_reservation.get('special_occasion'):
         occasion_text = f"\n🎉 Ocasión especial: {updated_reservation['special_occasion']}"
-    
+
+    table_text = ""
+    if updated_reservation.get('table_id'):
+        table_text = f"\n🪑 Mesa asignada: {updated_reservation['table_id']} ({updated_reservation.get('table_zone', 'salón')})"
+
     preferences_text = ""
     if updated_reservation.get('preferences'):
         preferences_text = f"\n📝 Preferencias: {updated_reservation['preferences']}"
@@ -470,7 +487,7 @@ def update_reservation(
 📅 Fecha: {full_date}
 🕐 Hora: {updated_reservation['time']}
 👥 Número de personas: {updated_reservation['num_people']}
-📞 Teléfono: {updated_reservation['phone']}{occasion_text}{preferences_text}
+📞 Teléfono: {updated_reservation['phone']}{table_text}{occasion_text}{preferences_text}
 📊 Estado: {status_display}{final_message}
     """
     
@@ -586,7 +603,11 @@ def get_reservation_details(reservation_id: str) -> str:
     occasion_text = ""
     if reservation.get('special_occasion'):
         occasion_text = f"\n🎉 Ocasión especial: {reservation['special_occasion']}"
-    
+
+    table_text = ""
+    if reservation.get('table_id'):
+        table_text = f"\n🪑 Mesa asignada: {reservation['table_id']} ({reservation.get('table_zone', 'salón')})"
+
     # Preferencias (si existen)
     preferences_text = ""
     if reservation.get('preferences'):
@@ -620,7 +641,7 @@ def get_reservation_details(reservation_id: str) -> str:
 📞 Teléfono: {reservation['phone']}
 📅 Fecha: {full_date}
 🕐 Hora: {reservation['time']}
-👥 Número de personas: {reservation['num_people']}{occasion_text}{preferences_text}
+👥 Número de personas: {reservation['num_people']}{table_text}{occasion_text}{preferences_text}
 📊 Estado: {status_display}
 🗓️ Creada el: {created_at}{status_message}
     """
