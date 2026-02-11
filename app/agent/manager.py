@@ -13,6 +13,7 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 from app.config import settings
 from app.agent.prompts import SYSTEM_PROMPT, ERROR_MESSAGES
 from app.agent.tools import (
+    check_availability,
     create_reservation,
     list_reservations,
     update_reservation,
@@ -37,6 +38,7 @@ class RestaurantAgentManager:
         self.tools = [
             calculator,
             current_time,
+            check_availability,
             create_reservation,
             list_reservations,
             update_reservation,

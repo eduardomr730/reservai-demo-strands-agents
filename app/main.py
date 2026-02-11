@@ -11,7 +11,7 @@ from app.config import settings
 from app.agent.manager import agent_manager
 from app.agent.prompts import ERROR_MESSAGES
 from app.middleware.validation import twilio_validator
-from app.database.dynamodb_client import db_client
+from app.database.reservation_repository import reservation_repository
 
 # Configurar logging
 logging.basicConfig(
@@ -189,7 +189,7 @@ async def get_stats():
         from collections import Counter
         
         # Obtener todas las reservas
-        all_reservations = db_client.scan_all_reservations()
+        all_reservations = reservation_repository.scan_all_reservations()
         
         # Contar por estado
         statuses = [r.get('status') for r in all_reservations]
@@ -197,7 +197,7 @@ async def get_stats():
         
         # Reservas de hoy
         today = datetime.now().strftime("%Y-%m-%d")
-        today_reservations = db_client.query_reservations_by_date(today)
+        today_reservations = reservation_repository.query_reservations_by_date(today)
         
         return {
             "status": "success",
