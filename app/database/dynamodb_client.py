@@ -264,11 +264,11 @@ class DynamoDBClient:
             "Put": {
                 "TableName": settings.dynamodb_table_name,
                 "Item": self._serialize_item(self._build_slot_item(table_id, slot_key, reservation)),
-                "ConditionExpression": "attribute_not_exists(PK) OR reservation_id = :rid OR #st = :free",
-                "ExpressionAttributeNames": {"#st": "status"},
+                # Permitimos crear el slot si no existe o sobreescribir solo si es del mismo reservation_id.
+                # Evitamos referencias a claves/keywords en la condición para reducir ValidationError en transacciones.
+                "ConditionExpression": "attribute_not_exists(reservation_id) OR reservation_id = :rid",
                 "ExpressionAttributeValues": {
                     ":rid": self._serialize_value(reservation_id),
-                    ":free": self._serialize_value("free"),
                 },
             }
         }
@@ -309,7 +309,13 @@ class DynamoDBClient:
         }
 
     def _transact_write(self, actions: List[dict]) -> None:
-        self._ddb_client.transact_write_items(TransactItems=actions)
+        try:
+            self._ddb_client.transact_write_items(TransactItems=actions)
+        except ClientError as e:
+            reasons = e.response.get("CancellationReasons", [])
+            if reasons:
+                logger.error(f"❌ CancellationReasons: {reasons}")
+            raise
 
     def _prepare_reservation_defaults(self, reservation: dict) -> dict:
         now = datetime.utcnow().isoformat()
