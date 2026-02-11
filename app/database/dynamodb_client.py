@@ -3,6 +3,7 @@ Cliente de DynamoDB para gestionar reservas con asignación de mesas y slots.
 """
 import boto3
 import logging
+import copy
 from typing import Optional, List, Dict, Tuple
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -86,6 +87,20 @@ class DynamoDBClient:
 
     def _serialize_value(self, value):
         return self._serializer.serialize(value)
+
+    def _force_av_string(self, value) -> dict:
+        if isinstance(value, dict):
+            if "S" in value:
+                return {"S": str(value["S"])}
+            if "N" in value:
+                return {"S": str(value["N"])}
+            if "BOOL" in value:
+                return {"S": str(value["BOOL"]).lower()}
+            if "M" in value:
+                return {"S": str(value["M"])}
+            if "L" in value:
+                return {"S": str(value["L"])}
+        return {"S": str(value)}
 
     def _strip_internal_fields(self, item: dict) -> dict:
         item.pop("PK", None)
@@ -317,14 +332,66 @@ class DynamoDBClient:
         }
 
     def _transact_write(self, actions: List[dict]) -> None:
+        normalized_actions = copy.deepcopy(actions)
+        for action in normalized_actions:
+            put_item = action.get("Put", {}).get("Item")
+            if put_item:
+                if "PK" in put_item:
+                    put_item["PK"] = self._force_av_string(put_item["PK"])
+                if "SK" in put_item:
+                    put_item["SK"] = self._force_av_string(put_item["SK"])
+                if "GSI1PK" in put_item:
+                    put_item["GSI1PK"] = self._force_av_string(put_item["GSI1PK"])
+                if "GSI1SK" in put_item:
+                    put_item["GSI1SK"] = self._force_av_string(put_item["GSI1SK"])
+
+            delete_key = action.get("Delete", {}).get("Key")
+            if delete_key:
+                if "PK" in delete_key:
+                    delete_key["PK"] = self._force_av_string(delete_key["PK"])
+                if "SK" in delete_key:
+                    delete_key["SK"] = self._force_av_string(delete_key["SK"])
+
+        debug_keys = []
+        for idx, action in enumerate(normalized_actions):
+            put_item = action.get("Put", {}).get("Item")
+            delete_key = action.get("Delete", {}).get("Key")
+            if put_item:
+                pk = put_item.get("PK")
+                sk = put_item.get("SK")
+                debug_keys.append(
+                    {
+                        "idx": idx,
+                        "op": "Put",
+                        "pk_type": list(pk.keys())[0] if isinstance(pk, dict) and pk else type(pk).__name__,
+                        "sk_type": list(sk.keys())[0] if isinstance(sk, dict) and sk else type(sk).__name__,
+                        "pk": pk,
+                        "sk": sk,
+                    }
+                )
+            elif delete_key:
+                pk = delete_key.get("PK")
+                sk = delete_key.get("SK")
+                debug_keys.append(
+                    {
+                        "idx": idx,
+                        "op": "Delete",
+                        "pk_type": list(pk.keys())[0] if isinstance(pk, dict) and pk else type(pk).__name__,
+                        "sk_type": list(sk.keys())[0] if isinstance(sk, dict) and sk else type(sk).__name__,
+                        "pk": pk,
+                        "sk": sk,
+                    }
+                )
+
         try:
-            self._ddb_client.transact_write_items(TransactItems=actions)
+            self._ddb_client.transact_write_items(TransactItems=normalized_actions)
         except ClientError as e:
             reasons = e.response.get("CancellationReasons", [])
             if reasons:
                 logger.error(f"❌ CancellationReasons: {reasons}")
-            if actions:
-                logger.error(f"❌ First TransactItem payload: {actions[0]}")
+            logger.error(f"❌ Transact key debug: {debug_keys}")
+            if normalized_actions:
+                logger.error(f"❌ First TransactItem payload: {normalized_actions[0]}")
             raise
 
     def _prepare_reservation_defaults(self, reservation: dict) -> dict:
