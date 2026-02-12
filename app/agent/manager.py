@@ -3,9 +3,8 @@ Gestor del agente de conversación con memoria persistente.
 """
 import logging
 import re
-from collections import deque
 from datetime import datetime, timedelta
-from typing import Deque, Dict
+from typing import Dict
 from zoneinfo import ZoneInfo
 
 from strands import Agent
@@ -37,10 +36,6 @@ class RestaurantAgentManager:
     
     def __init__(self):
         self.agents: Dict[str, Agent] = {}
-        self.turn_counts: Dict[str, int] = {}
-        self.last_seen_at: Dict[str, datetime] = {}
-        self.conversation_tags: Dict[str, str] = {}
-        self.recent_context: Dict[str, Deque[str]] = {}
         self.system_prompt = build_system_prompt(self._get_current_datetime_spain())
         
         # Herramientas disponibles
@@ -59,52 +54,6 @@ class RestaurantAgentManager:
     def _now_spain(self) -> datetime:
         """Devuelve la fecha/hora actual en zona horaria de España."""
         return datetime.now(ZoneInfo("Europe/Madrid"))
-
-    def _new_conversation_tag(self) -> str:
-        """Tag único para aislar memoria por sesión conversacional."""
-        return self._now_spain().strftime("%Y%m%d%H%M%S%f")
-
-    def _get_recent_context_buffer(self, clean_phone: str) -> Deque[str]:
-        """Obtiene el buffer de contexto reciente para un usuario."""
-        if clean_phone not in self.recent_context:
-            self.recent_context[clean_phone] = deque(maxlen=settings.recent_context_turns * 2)
-        return self.recent_context[clean_phone]
-
-    def _render_recent_context(self, clean_phone: str) -> str:
-        """Construye texto del contexto reciente para inyectar al prompt de turno."""
-        recent = self._get_recent_context_buffer(clean_phone)
-        if not recent:
-            return "sin_contexto_previo"
-        return "\n".join(recent)
-
-    def _should_rotate_session(self, clean_phone: str, now_spain: datetime) -> tuple[bool, str]:
-        """Determina si conviene reiniciar sesión para evitar arrastre de contexto antiguo."""
-        if clean_phone not in self.agents:
-            return False, ""
-
-        last_seen = self.last_seen_at.get(clean_phone)
-        if last_seen:
-            idle = now_spain - last_seen
-            if idle > timedelta(minutes=settings.session_idle_reset_minutes):
-                return True, f"inactividad>{settings.session_idle_reset_minutes}m"
-
-        turns = self.turn_counts.get(clean_phone, 0)
-        if turns >= settings.max_turns_per_session:
-            return True, f"turnos>{settings.max_turns_per_session}"
-
-        return False, ""
-
-    def _rotate_session(self, clean_phone: str, reason: str) -> None:
-        """Reinicia sesión del usuario para cortar memoria antigua."""
-        if clean_phone in self.agents:
-            del self.agents[clean_phone]
-        self.turn_counts[clean_phone] = 0
-        self.conversation_tags[clean_phone] = self._new_conversation_tag()
-        logger.info("🔄 Sesión reiniciada para %s (%s)", clean_phone, reason)
-
-        # Si la sesión se corta por inactividad, también limpiamos el contexto local reciente.
-        if reason.startswith("inactividad"):
-            self.recent_context.pop(clean_phone, None)
 
     def _get_current_datetime_spain(self) -> str:
         """Devuelve fecha y hora actual en España para inyección en prompt."""
@@ -162,9 +111,6 @@ class RestaurantAgentManager:
             "usar_telefono_metadata=true\n"
             "no_solicitar_telefono_al_usuario=true\n"
             "[/METADATA_WHATSAPP]\n\n"
-            "[CONTEXTO_RECIENTE]\n"
-            f"{self._render_recent_context(clean_phone)}\n"
-            "[/CONTEXTO_RECIENTE]\n\n"
             "[MENSAJE_USUARIO]\n"
             f"{message}\n"
             "[/MENSAJE_USUARIO]"
@@ -195,13 +141,8 @@ class RestaurantAgentManager:
             return self.agents[clean_phone]
         
         # Crear nueva sesión para este usuario
-        conversation_tag = self.conversation_tags.get(clean_phone)
-        if not conversation_tag:
-            conversation_tag = self._new_conversation_tag()
-            self.conversation_tags[clean_phone] = conversation_tag
-
-        session_id = f"whatsapp_session_{clean_phone}_{conversation_tag}"
-        actor_id = f"whatsapp_user_{clean_phone}_{conversation_tag}"
+        session_id = f"whatsapp_session_{clean_phone}"
+        actor_id = f"whatsapp_user_{clean_phone}"
         
         logger.info(f"🆕 Creando nuevo agente para {clean_phone}")
         
@@ -228,8 +169,6 @@ class RestaurantAgentManager:
             
             # Guardar en cache
             self.agents[clean_phone] = agent
-            self.turn_counts.setdefault(clean_phone, 0)
-            self.last_seen_at[clean_phone] = self._now_spain()
             
             logger.info(f"✅ Agente creado exitosamente para {clean_phone}")
             return agent
@@ -264,11 +203,6 @@ class RestaurantAgentManager:
         
         try:
             logger.info(f"📨 Procesando mensaje de {clean_phone}: {message[:50]}...")
-
-            now_spain = self._now_spain()
-            should_rotate, reason = self._should_rotate_session(clean_phone, now_spain)
-            if should_rotate:
-                self._rotate_session(clean_phone, reason)
             
             # Obtener o crear agente
             agent = self._get_or_create_agent(phone_number)
@@ -281,10 +215,6 @@ class RestaurantAgentManager:
             results = agent(enriched_message)
             response = results.message['content'][0]['text']
             response = self._sanitize_agent_response(response)
-            self._get_recent_context_buffer(clean_phone).append(f"Usuario: {message.strip()}")
-            self._get_recent_context_buffer(clean_phone).append(f"Asistente: {response.strip()}")
-            self.turn_counts[clean_phone] = self.turn_counts.get(clean_phone, 0) + 1
-            self.last_seen_at[clean_phone] = now_spain
             
             # Limitar longitud para WhatsApp
             if len(response) > settings.max_message_length:
@@ -312,10 +242,6 @@ class RestaurantAgentManager:
         
         if clean_phone in self.agents:
             del self.agents[clean_phone]
-            self.turn_counts.pop(clean_phone, None)
-            self.last_seen_at.pop(clean_phone, None)
-            self.conversation_tags.pop(clean_phone, None)
-            self.recent_context.pop(clean_phone, None)
             logger.info(f"🗑️  Sesión eliminada para {clean_phone}")
             return True
         
@@ -330,10 +256,6 @@ class RestaurantAgentManager:
         """Limpiar todas las sesiones (útil para mantenimiento)."""
         count = len(self.agents)
         self.agents.clear()
-        self.turn_counts.clear()
-        self.last_seen_at.clear()
-        self.conversation_tags.clear()
-        self.recent_context.clear()
         logger.info(f"🗑️  {count} sesiones eliminadas")
 
 
