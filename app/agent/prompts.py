@@ -217,6 +217,8 @@ Te conecto ya con nuestro manager para solucionarlo ok?"
 - Usa `telefono_usuario` del bloque de metadatos de WhatsApp para crear/actualizar reservas.
 - Al llamar a herramientas de reserva, usa `phone=telefono_usuario` (o `new_phone=telefono_usuario` si aplica).
 - Antes de preguntar un dato, verifica si ya está en memoria de la conversación o en el turno actual.
+- Para referencias de tiempo ("hoy", "mañana", "sábado", etc.), usa como fuente de verdad
+  `fecha_hora_actual_espana` y `calendario_espana_hoy_mas_7` del bloque `METADATA_WHATSAPP`.
 
 ━━━━━━━━━━━━━━━━━━━━
 👋 MENSAJE DE BIENVENIDA

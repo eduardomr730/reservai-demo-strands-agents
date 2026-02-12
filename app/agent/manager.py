@@ -3,7 +3,7 @@ Gestor del agente de conversación con memoria persistente.
 """
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict
 from zoneinfo import ZoneInfo
 
@@ -54,7 +54,39 @@ class RestaurantAgentManager:
     def _get_current_datetime_spain(self) -> str:
         """Devuelve fecha y hora actual en España para inyección en prompt."""
         madrid_now = datetime.now(ZoneInfo("Europe/Madrid"))
-        return madrid_now.strftime("%A %d/%m/%Y %H:%M:%S %Z")
+        day_names = [
+            "Lunes",
+            "Martes",
+            "Miércoles",
+            "Jueves",
+            "Viernes",
+            "Sábado",
+            "Domingo",
+        ]
+        day_name = day_names[madrid_now.weekday()]
+        return f"{day_name} {madrid_now.strftime('%d/%m/%Y %H:%M:%S %Z')}"
+
+    def _get_spain_calendar_context(self) -> str:
+        """
+        Devuelve un calendario corto (hoy + próximos 7 días) en hora de España.
+        """
+        madrid_now = datetime.now(ZoneInfo("Europe/Madrid"))
+        day_names = [
+            "Lunes",
+            "Martes",
+            "Miércoles",
+            "Jueves",
+            "Viernes",
+            "Sábado",
+            "Domingo",
+        ]
+        lines = []
+        for offset in range(8):
+            day_dt = (madrid_now + timedelta(days=offset)).date()
+            day_name = day_names[day_dt.weekday()]
+            label = "hoy" if offset == 0 else f"+{offset}d"
+            lines.append(f"{label}:{day_name} {day_dt.isoformat()}")
+        return " | ".join(lines)
     
     def _sanitize_phone_number(self, phone: str) -> str:
         """
@@ -70,6 +102,8 @@ class RestaurantAgentManager:
         return (
             "[METADATA_WHATSAPP]\n"
             f"telefono_usuario={clean_phone}\n"
+            f"fecha_hora_actual_espana={self._get_current_datetime_spain()}\n"
+            f"calendario_espana_hoy_mas_7={self._get_spain_calendar_context()}\n"
             "usar_telefono_metadata=true\n"
             "no_solicitar_telefono_al_usuario=true\n"
             "[/METADATA_WHATSAPP]\n\n"
