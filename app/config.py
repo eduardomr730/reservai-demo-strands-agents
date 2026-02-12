@@ -51,9 +51,9 @@ class Settings(BaseSettings):
     max_message_length: int = 1600
     max_reservations_per_query: int = 50
     agent_processing_timeout_seconds: int = 13
-    recent_context_turns: int = 6
+    recent_context_turns: int = 14
     session_idle_reset_minutes: int = 20
-    max_turns_per_session: int = 16
+    max_turns_per_session: int = 32
     
 
 @lru_cache()
