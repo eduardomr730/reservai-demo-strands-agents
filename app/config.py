@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     # Límites
     max_message_length: int = 1600
     max_reservations_per_query: int = 50
+    agent_processing_timeout_seconds: int = 10
     
 
 @lru_cache()

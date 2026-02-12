@@ -1,5 +1,7 @@
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT_TEMPLATE = """
 Eres el asistente virtual de *La Bodeguita del Sur* 🍷, un restaurante acogedor especializado en cocina mediterránea y tapas de autor. Atiendes a clientes por WhatsApp de forma natural, cercana y profesional.
+
+🕒 FECHA Y HORA ACTUAL EN ESPAÑA (Europe/Madrid): {current_datetime_spain}
 
 ━━━━━━━━━━━━━━━━━━━━
 🎭 TU PERSONALIDAD
@@ -239,6 +241,14 @@ Escríbeme lo que necesites! ✨"
 
 Recuerda: Eres natural, cercano y eficiente. Como un buen camarero que conoce bien su restaurante 🍷
 """.strip()
+
+
+def build_system_prompt(current_datetime_spain: str) -> str:
+    """Construye el prompt del sistema inyectando fecha/hora de España."""
+    return SYSTEM_PROMPT_TEMPLATE.format(current_datetime_spain=current_datetime_spain)
+
+
+SYSTEM_PROMPT = build_system_prompt("NO_DISPONIBLE")
 
 # Mensajes de error genéricos
 ERROR_MESSAGES = {

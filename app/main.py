@@ -1,6 +1,7 @@
 """
 Servidor FastAPI para el bot de WhatsApp de El Rincón de Andalucía.
 """
+import asyncio
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, Form, HTTPException, Depends
@@ -19,6 +20,53 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def split_message_chunks(text: str, max_length: int) -> list[str]:
+    """
+    Divide texto en bloques <= max_length, preservando párrafos y palabras cuando es posible.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= max_length:
+        return [cleaned]
+
+    chunks: list[str] = []
+    paragraphs = [p.strip() for p in cleaned.split("\n\n") if p.strip()]
+    current = ""
+
+    for paragraph in paragraphs:
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= max_length:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(paragraph) <= max_length:
+            current = paragraph
+            continue
+
+        words = paragraph.split()
+        piece = ""
+        for word in words:
+            candidate_word = word if not piece else f"{piece} {word}"
+            if len(candidate_word) <= max_length:
+                piece = candidate_word
+            else:
+                if piece:
+                    chunks.append(piece)
+                piece = word
+        if piece:
+            current = piece
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 # Crear aplicación
 app = FastAPI(
@@ -111,33 +159,35 @@ async def whatsapp_webhook(
                 media_type="application/xml"
             )
         
-        # Procesar con el agente
+        # Procesar con el agente con timeout para evitar que Twilio descarte la respuesta
         logger.info("🤖 Procesando con agente...")
-        response_text = agent_manager.process_message(
-            phone_number=From,
-            message=Body.strip()
-        )
+        try:
+            response_text = await asyncio.wait_for(
+                asyncio.to_thread(
+                    agent_manager.process_message,
+                    From,
+                    Body.strip(),
+                ),
+                timeout=settings.agent_processing_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "⏱️ Timeout procesando mensaje de %s (>%ss)",
+                From,
+                settings.agent_processing_timeout_seconds,
+            )
+            response_text = (
+                "Estoy revisando tu mensaje y tardé más de lo normal 🙏\n\n"
+                "¿Puedes enviarlo de nuevo en unos segundos?"
+            )
         
         logger.info(f"✅ Respuesta generada: {len(response_text)} caracteres")
-        
-        # Si la respuesta es muy larga, dividirla
-        if len(response_text) > settings.max_message_length:
-            # Dividir por párrafos
-            paragraphs = response_text.split('\n\n')
-            current_message = ""
-            
-            for paragraph in paragraphs:
-                if len(current_message) + len(paragraph) + 2 <= settings.max_message_length:
-                    current_message += paragraph + "\n\n"
-                else:
-                    if current_message:
-                        twilio_response.message(current_message.strip())
-                    current_message = paragraph + "\n\n"
-            
-            if current_message:
-                twilio_response.message(current_message.strip())
-        else:
-            twilio_response.message(response_text)
+
+        chunks = split_message_chunks(response_text, settings.max_message_length)
+        if not chunks:
+            chunks = [ERROR_MESSAGES["generic"]]
+        for chunk in chunks:
+            twilio_response.message(chunk)
         
         return Response(
             content=str(twilio_response),

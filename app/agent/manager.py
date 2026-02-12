@@ -3,16 +3,19 @@ Gestor del agente de conversación con memoria persistente.
 """
 import logging
 import re
+from datetime import datetime
 from typing import Dict
+from zoneinfo import ZoneInfo
+
 from strands import Agent
-from strands_tools import calculator, current_time
+from strands_tools import calculator
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager
 )
 
 from app.config import settings
-from app.agent.prompts import SYSTEM_PROMPT, ERROR_MESSAGES
+from app.agent.prompts import build_system_prompt, ERROR_MESSAGES
 from app.agent.tools import (
     check_availability,
     create_reservation,
@@ -33,12 +36,11 @@ class RestaurantAgentManager:
     
     def __init__(self):
         self.agents: Dict[str, Agent] = {}
-        self.system_prompt = SYSTEM_PROMPT
+        self.system_prompt = build_system_prompt(self._get_current_datetime_spain())
         
         # Herramientas disponibles
         self.tools = [
             calculator,
-            current_time,
             check_availability,
             create_reservation,
             list_reservations,
@@ -48,6 +50,11 @@ class RestaurantAgentManager:
         ]
         
         logger.info("✅ RestaurantAgentManager inicializado")
+
+    def _get_current_datetime_spain(self) -> str:
+        """Devuelve fecha y hora actual en España para inyección en prompt."""
+        madrid_now = datetime.now(ZoneInfo("Europe/Madrid"))
+        return madrid_now.strftime("%A %d/%m/%Y %H:%M:%S %Z")
     
     def _sanitize_phone_number(self, phone: str) -> str:
         """
@@ -131,6 +138,17 @@ class RestaurantAgentManager:
         except Exception as e:
             logger.error(f"❌ Error creando agente para {clean_phone}: {e}")
             raise
+
+    def _refresh_agent_system_prompt(self, agent: Agent) -> None:
+        """
+        Actualiza el prompt del agente en cada ejecución con la hora actual de España.
+        """
+        dynamic_prompt = build_system_prompt(self._get_current_datetime_spain())
+        self.system_prompt = dynamic_prompt
+        try:
+            agent.system_prompt = dynamic_prompt
+        except Exception:
+            logger.warning("⚠️ No se pudo actualizar system_prompt dinámico en el agente")
     
     def process_message(self, phone_number: str, message: str) -> str:
         """
@@ -150,6 +168,7 @@ class RestaurantAgentManager:
             
             # Obtener o crear agente
             agent = self._get_or_create_agent(phone_number)
+            self._refresh_agent_system_prompt(agent)
 
             # Inyectar metadatos del canal para evitar pedir el teléfono al usuario
             enriched_message = self._build_message_with_metadata(clean_phone, message)
