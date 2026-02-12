@@ -54,12 +54,10 @@ def create_reservation(
 
     details = [
         "✅ Reserva creada",
-        f"ID: {reservation['id']}",
         f"Cliente: {reservation['customer_name']}",
         f"Fecha: {_format_date_human(reservation['date'])}",
         f"Hora: {reservation['time']}",
         f"Personas: {reservation['num_people']}",
-        f"Mesa: {reservation['table_id']} ({reservation.get('table_zone', 'salon')})",
         "Estado: pending",
     ]
 
@@ -168,11 +166,9 @@ def update_reservation(
     return "\n".join(
         [
             "✅ Reserva actualizada",
-            f"ID: {reservation['id']}",
             f"Fecha: {_format_date_human(reservation['date'])}",
             f"Hora: {reservation['time']}",
             f"Personas: {reservation['num_people']}",
-            f"Mesa: {reservation.get('table_id', 'sin asignar')} ({reservation.get('table_zone', 'N/A')})",
             f"Estado: {reservation['status']}",
         ]
     )
@@ -192,7 +188,6 @@ def cancel_reservation(reservation_id: str, reason: str = "") -> str:
     return "\n".join(
         [
             "❌ Reserva cancelada",
-            f"ID: {reservation['id']}",
             f"Cliente: {reservation['customer_name']}",
             f"Fecha: {_format_date_human(reservation['date'])}",
             f"Hora: {reservation['time']}",
@@ -209,15 +204,11 @@ def get_reservation_details(reservation_id: str) -> str:
 
     return json.dumps(
         {
-            "id": reservation.get("id"),
             "customer_name": reservation.get("customer_name"),
-            "phone": reservation.get("phone"),
             "date": reservation.get("date"),
             "formatted_date": _format_date_human(str(reservation.get("date", ""))),
             "time": reservation.get("time"),
             "num_people": reservation.get("num_people"),
-            "table_id": reservation.get("table_id"),
-            "table_zone": reservation.get("table_zone"),
             "status": reservation.get("status"),
             "special_occasion": reservation.get("special_occasion", ""),
             "preferences": reservation.get("preferences", ""),

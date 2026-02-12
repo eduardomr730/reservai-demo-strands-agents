@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     
     # Agente
     agentcore_memory_id: str
-    agent_model: str = "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    agent_model: str = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
     
     # DynamoDB
     dynamodb_table_name: str = "restaurant-reservations"

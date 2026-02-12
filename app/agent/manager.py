@@ -2,6 +2,7 @@
 Gestor del agente de conversación con memoria persistente.
 """
 import logging
+import re
 from typing import Dict
 from strands import Agent
 from strands_tools import calculator, current_time
@@ -54,6 +55,33 @@ class RestaurantAgentManager:
         Ejemplo: 'whatsapp:+34612345678' -> '34612345678'
         """
         return phone.replace("whatsapp:", "").replace("+", "").replace(" ", "")
+
+    def _build_message_with_metadata(self, clean_phone: str, message: str) -> str:
+        """
+        Inyecta metadatos del canal para guiar al agente sin pedir datos redundantes.
+        """
+        return (
+            "[METADATA_WHATSAPP]\n"
+            f"telefono_usuario={clean_phone}\n"
+            "usar_telefono_metadata=true\n"
+            "no_solicitar_telefono_al_usuario=true\n"
+            "[/METADATA_WHATSAPP]\n\n"
+            "[MENSAJE_USUARIO]\n"
+            f"{message}\n"
+            "[/MENSAJE_USUARIO]"
+        )
+
+    def _sanitize_agent_response(self, response: str) -> str:
+        """
+        Evita exponer identificadores internos o datos técnicos al usuario final.
+        """
+        sanitized = response
+        sanitized = re.sub(r"(?im)^\s*ID:\s*.*(?:\n|$)", "", sanitized)
+        sanitized = re.sub(r'(?im)^\s*"id"\s*:\s*".*?"\s*,?\s*$', "", sanitized)
+        sanitized = re.sub(r'(?im)^\s*"table_id"\s*:\s*".*?"\s*,?\s*$', "", sanitized)
+        sanitized = re.sub(r"(?im)^\s*reservation_id\s*[:=]\s*.*(?:\n|$)", "", sanitized)
+        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+        return sanitized
     
     def _get_or_create_agent(self, phone_number: str) -> Agent:
         """
@@ -122,10 +150,14 @@ class RestaurantAgentManager:
             
             # Obtener o crear agente
             agent = self._get_or_create_agent(phone_number)
-            
+
+            # Inyectar metadatos del canal para evitar pedir el teléfono al usuario
+            enriched_message = self._build_message_with_metadata(clean_phone, message)
+
             # Procesar mensaje
-            results = agent(message)
+            results = agent(enriched_message)
             response = results.message['content'][0]['text']
+            response = self._sanitize_agent_response(response)
             
             # Limitar longitud para WhatsApp
             if len(response) > settings.max_message_length:
