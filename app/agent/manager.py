@@ -174,8 +174,20 @@ class RestaurantAgentManager:
             return agent
             
         except Exception as e:
-            logger.error(f"❌ Error creando agente para {clean_phone}: {e}")
-            raise
+            logger.error(f"❌ Error creando agente con memoria para {clean_phone}: {e}")
+            logger.warning(
+                "⚠️ Memoria AgentCore no disponible. Usando agente sin memoria persistente para %s",
+                clean_phone,
+            )
+
+            # Fallback: continuar sin session_manager para no cortar la conversación
+            agent = Agent(
+                model=settings.agent_model,
+                system_prompt=self.system_prompt,
+                tools=self.tools,
+            )
+            self.agents[clean_phone] = agent
+            return agent
 
     def _refresh_agent_system_prompt(self, agent: Agent) -> None:
         """
