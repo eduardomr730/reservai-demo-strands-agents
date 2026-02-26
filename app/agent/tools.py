@@ -7,7 +7,7 @@ from datetime import datetime
 
 from strands import tool
 
-from app.database.reservation_repository import VALID_STATUSES, reservation_repository
+from app.booking_v2.repository import VALID_STATUSES, booking_repository
 
 
 def _format_date_human(date: str) -> str:
@@ -36,7 +36,7 @@ def create_reservation(
     if len(phone.strip()) < 9:
         return "❌ Debes indicar un teléfono válido"
 
-    success, error, reservation = reservation_repository.create_reservation(
+    success, error, reservation = booking_repository.create_reservation(
         {
             "date": date,
             "time": time,
@@ -75,7 +75,7 @@ def check_availability(date: str, num_people: int, preferred_zone: str = "") -> 
     if num_people < 1 or num_people > 12:
         return "❌ El número de personas debe estar entre 1 y 12"
 
-    available = reservation_repository.available_times(date, int(num_people), preferred_zone)
+    available = booking_repository.available_times(date, int(num_people), preferred_zone)
     if not available:
         return "No hay disponibilidad para esa fecha y tamaño de grupo"
 
@@ -98,7 +98,7 @@ def list_reservations(date: str = "", status: str = "all", customer_name: str = 
     if status != "all" and status not in VALID_STATUSES:
         return "❌ Estado inválido. Usa: all, pending, confirmed, cancelled"
 
-    reservations = reservation_repository.list_reservations(
+    reservations = booking_repository.list_reservations(
         date=date.strip(),
         status=status,
         customer_name=customer_name.strip(),
@@ -159,7 +159,7 @@ def update_reservation(
     if not updates:
         return "⚠️ No se recibieron cambios"
 
-    success, error, reservation = reservation_repository.update_reservation(reservation_id.strip(), updates)
+    success, error, reservation = booking_repository.update_reservation(reservation_id.strip(), updates)
     if not success or not reservation:
         return f"❌ {error}"
 
@@ -181,7 +181,7 @@ def cancel_reservation(reservation_id: str, reason: str = "") -> str:
     if reason.strip():
         updates["preferences"] = f"{reason.strip()}"
 
-    success, error, reservation = reservation_repository.update_reservation(reservation_id.strip(), updates)
+    success, error, reservation = booking_repository.update_reservation(reservation_id.strip(), updates)
     if not success or not reservation:
         return f"❌ {error}"
 
@@ -198,7 +198,7 @@ def cancel_reservation(reservation_id: str, reason: str = "") -> str:
 @tool
 def get_reservation_details(reservation_id: str) -> str:
     """Get full reservation details by reservation id."""
-    reservation = reservation_repository.get_reservation(reservation_id.strip())
+    reservation = booking_repository.get_reservation(reservation_id.strip())
     if not reservation:
         return "❌ No se encontró la reserva"
 

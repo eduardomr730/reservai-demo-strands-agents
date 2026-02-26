@@ -7,6 +7,7 @@ from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
+from boto3.dynamodb.types import TypeSerializer
 
 from app.config import settings
 
@@ -27,7 +28,20 @@ class DynamoDBClient:
 
         self.resource = boto3.resource("dynamodb", **session_kwargs)
         self.table = self.resource.Table(settings.dynamodb_table_name)
+        self.serializer = TypeSerializer()
         logger.info("DynamoDB client ready for table: %s", settings.dynamodb_table_name)
+
+    def serialize_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Serialize Python item to low-level DynamoDB item format."""
+        return {key: self.serializer.serialize(value) for key, value in item.items()}
+
+    def serialize_key(self, key: dict[str, Any]) -> dict[str, Any]:
+        """Serialize Python key for low-level DynamoDB API usage."""
+        return self.serialize_item(key)
+
+    def serialize_expression_values(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Serialize expression values for low-level DynamoDB API usage."""
+        return {key: self.serializer.serialize(value) for key, value in values.items()}
 
     def get_item(self, key: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -118,6 +132,21 @@ class DynamoDBClient:
         except Exception as exc:  # noqa: BLE001
             logger.error("DynamoDB scan failed: %s", str(exc))
             return []
+
+    def transact_write(self, transact_items: list[dict[str, Any]]) -> bool:
+        """Execute a DynamoDB TransactWriteItems request."""
+        try:
+            self.resource.meta.client.transact_write_items(TransactItems=transact_items)
+            return True
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in {"TransactionCanceledException", "ConditionalCheckFailedException"}:
+                return False
+            logger.error("DynamoDB transact_write failed: %s", str(exc))
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.error("DynamoDB transact_write failed: %s", str(exc))
+            return False
 
 
 # Global singleton

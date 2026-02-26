@@ -1,5 +1,5 @@
 # reservai-demo-strands-agents
-This repository contains the source code for a WhatsApp bot assistant for "El Rincón de Andalucía," a virtual restaurant. The bot is powered by AI agents built with `strands-agents` and AWS Bedrock, allowing it to handle reservations, answer questions about the menu, and provide restaurant information in a conversational manner.
+This repository contains the source code for a WhatsApp bot assistant for a virtual restaurant. The bot is powered by AI agents built with `strands-agents` and AWS Bedrock, allowing it to handle reservations, answer questions about the menu, and provide restaurant information in a conversational manner.
 
 The application is built with FastAPI and is designed for easy deployment using Docker, with specific configurations for platforms like Railway.
 
@@ -7,7 +7,8 @@ The application is built with FastAPI and is designed for easy deployment using 
 
 - **Conversational AI:** Utilizes `strands-agents` and Amazon Bedrock (Anthropic Claude Sonnet) to understand and respond to user queries in natural language.
 - **WhatsApp Integration:** Seamlessly integrates with WhatsApp through the Twilio API.
-- **Reservation Management:** Allows users to create, view, update, and cancel restaurant reservations.
+- **Reservation Management (booking_v2):** Uses explicit open slots in DynamoDB and transactional reservation updates.
+- **Slot Operations:** Supports day/week slot publishing with admin endpoints and scripts.
 - **Persistent Memory:** Employs `bedrock-agentcore` for persistent memory, enabling contextually aware conversations across multiple interactions with the same user.
 - **Information Hub:** Provides detailed information about the restaurant's menu, operating hours, and location, based on a comprehensive system prompt.
 - **Containerized:** Includes a `Dockerfile` and Gunicorn configuration for robust, production-ready deployment.
@@ -19,7 +20,7 @@ The application is built with FastAPI and is designed for easy deployment using 
 - **AI Agent Framework:** `strands-agents`
 - **Cloud AI Service:** Amazon Web Services (AWS) Bedrock
 - **Messaging API:** Twilio for WhatsApp
-- **Database:** SQLite for reservation storage
+- **Database:** DynamoDB (single-table model with slots + reservations)
 - **Deployment:** Docker, Gunicorn, Uvicorn
 - **Dependency Management:** `uv`
 

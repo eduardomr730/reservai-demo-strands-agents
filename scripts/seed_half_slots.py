@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Seed DynamoDB reservations until reaching a target slot occupancy ratio.
+"""Seed bookings in booking v2 until reaching a target slot occupancy ratio.
 
 Usage:
   python3 scripts/seed_half_slots.py
   python3 scripts/seed_half_slots.py --days 7 --target-ratio 0.5 --dry-run
+  python3 scripts/seed_half_slots.py --days 14 --auto-publish
 """
 
 from __future__ import annotations
@@ -18,15 +19,13 @@ from typing import Iterable
 
 import boto3
 from botocore.exceptions import ClientError
-from boto3.dynamodb.conditions import Attr
 
-# Ensure repository root is importable when running as a script (e.g. `uv run scripts/...`).
+# Ensure repository root is importable when running as a script.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-ACTIVE_STATUSES: set[str] = set()
-reservation_repository = None
+booking_repository = None
 
 FIRST_NAMES = [
     "Ana",
@@ -69,8 +68,13 @@ PREFERENCES = [
 SPECIAL_OCCASIONS = ["", "", "cumpleaños", "aniversario", "cena de empresa"]
 
 
+@dataclass(frozen=True)
+class DayWindow:
+    date: str
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Rellena slots de reservas en DynamoDB")
+    parser = argparse.ArgumentParser(description="Rellena slots abiertos en DynamoDB con reservas")
     parser.add_argument("--days", type=int, default=7, help="Número de días desde hoy (default: 7)")
     parser.add_argument(
         "--target-ratio",
@@ -85,6 +89,17 @@ def parse_args() -> argparse.Namespace:
         help="Intentos máximos de creación de reservas. Default: 3000",
     )
     parser.add_argument("--seed", type=int, default=42, help="Semilla random para reproducibilidad")
+    parser.add_argument(
+        "--auto-publish",
+        action="store_true",
+        help="Publica slots para el rango antes de sembrar reservas",
+    )
+    parser.add_argument(
+        "--opened-by",
+        type=str,
+        default="seed-script",
+        help="Identificador para opened_by al publicar slots",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -120,78 +135,27 @@ def validate_aws_credentials() -> None:
         ) from exc
 
 
-@dataclass(frozen=True)
-class DayWindow:
-    date: str
-    start_times: tuple[str, ...]
-
-
-def half_hour_times(start_hhmm: str, end_hhmm: str) -> list[str]:
-    start = datetime.strptime(start_hhmm, "%H:%M")
-    end = datetime.strptime(end_hhmm, "%H:%M")
-
-    out: list[str] = []
-    current = start
-    while current <= end:
-        out.append(current.strftime("%H:%M"))
-        current += timedelta(minutes=30)
-    return out
-
-
-def valid_times_for_weekday(weekday: int) -> list[str]:
-    # Monday=0 ... Sunday=6
-    if weekday == 0:
-        return []
-
-    if weekday in (1, 2, 3):
-        return half_hour_times("13:00", "16:00") + half_hour_times("20:00", "23:30")
-
-    if weekday in (4, 5):
-        return half_hour_times("13:00", "23:30") + ["00:00"]
-
-    return half_hour_times("13:00", "17:00")
-
-
 def build_date_windows(days: int) -> list[DayWindow]:
     now = datetime.now(UTC)
     windows: list[DayWindow] = []
 
     for offset in range(days):
         day = (now + timedelta(days=offset)).date()
-        date_str = day.strftime("%Y-%m-%d")
-        weekday = day.weekday()
-        times = valid_times_for_weekday(weekday)
-
-        future_only: list[str] = []
-        for time_str in times:
-            dt_value = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
-            if dt_value > now + timedelta(minutes=15):
-                future_only.append(time_str)
-
-        if future_only:
-            windows.append(DayWindow(date=date_str, start_times=tuple(future_only)))
+        windows.append(DayWindow(date=day.strftime("%Y-%m-%d")))
 
     return windows
 
 
-def count_active_tables() -> int:
-    tables = reservation_repository.client.scan(
-        FilterExpression=Attr("entity_type").eq("table") & Attr("is_active").eq(True)
-    )
-    return len(tables)
+def slot_counts(windows: Iterable[DayWindow]) -> tuple[int, int]:
+    total = 0
+    booked = 0
 
+    for window in windows:
+        stats = booking_repository.slot_stats(window.date)
+        total += int(stats.get("total", 0))
+        booked += int(stats.get("booked", 0))
 
-def estimate_total_slot_capacity(windows: Iterable[DayWindow], active_tables: int) -> int:
-    return sum(len(window.start_times) * active_tables for window in windows)
-
-
-def count_used_slots_in_range(start_date: str, end_date: str) -> int:
-    occupancy = reservation_repository.client.scan(FilterExpression=Attr("entity_type").eq("occupancy"))
-    return sum(
-        1
-        for row in occupancy
-        if start_date <= str(row.get("date", "")) <= end_date and str(row.get("status", "")) in ACTIVE_STATUSES
-    )
+    return total, booked
 
 
 def random_customer() -> tuple[str, str]:
@@ -202,17 +166,22 @@ def random_customer() -> tuple[str, str]:
 
 def create_random_reservation(windows: list[DayWindow]) -> bool:
     day = random.choice(windows)
-    time_value = random.choice(day.start_times)
-    name, phone = random_customer()
-    num_people = random.choices([2, 3, 4, 5, 6, 7, 8], weights=[25, 20, 18, 14, 10, 8, 5], k=1)[0]
+    people = random.choices([2, 3, 4, 5, 6, 7, 8], weights=[25, 20, 18, 14, 10, 8, 5], k=1)[0]
     preferences = random.choice(PREFERENCES)
+
+    available = booking_repository.available_times(day.date, people, preferences)
+    if not available:
+        return False
+
+    slot = random.choice(available)
+    name, phone = random_customer()
     special_occasion = random.choice(SPECIAL_OCCASIONS)
 
-    success, _, reservation = reservation_repository.create_reservation(
+    success, _, reservation = booking_repository.create_reservation(
         {
             "date": day.date,
-            "time": time_value,
-            "num_people": num_people,
+            "time": slot["time"],
+            "num_people": people,
             "customer_name": name,
             "phone": phone,
             "preferences": preferences,
@@ -224,26 +193,21 @@ def create_random_reservation(windows: list[DayWindow]) -> bool:
     if not success or not reservation:
         return False
 
-    # Mezcla de estados realista: ~65% confirmadas
     if random.random() < 0.65:
-        reservation_repository.update_reservation(reservation["id"], {"status": "confirmed"})
+        booking_repository.update_reservation(reservation["id"], {"status": "confirmed"})
 
     return True
 
 
 def main() -> None:
-    global ACTIVE_STATUSES, reservation_repository
+    global booking_repository
 
     args = parse_args()
     validate_aws_credentials()
 
-    from app.database.reservation_repository import (  # noqa: WPS433
-        ACTIVE_STATUSES as REPO_ACTIVE_STATUSES,
-        reservation_repository as REPO_INSTANCE,
-    )
+    from app.booking_v2.repository import booking_repository as BOOKING_REPOSITORY  # noqa: WPS433
 
-    ACTIVE_STATUSES = REPO_ACTIVE_STATUSES
-    reservation_repository = REPO_INSTANCE
+    booking_repository = BOOKING_REPOSITORY
 
     if args.days < 1:
         raise SystemExit("--days debe ser >= 1")
@@ -257,29 +221,37 @@ def main() -> None:
     if not windows:
         raise SystemExit("No hay ventanas válidas en el rango indicado")
 
-    active_tables = count_active_tables()
-    if active_tables == 0:
-        raise SystemExit("No hay mesas activas. Inicializa el catálogo de mesas antes de ejecutar este script.")
-
     start_date = windows[0].date
     end_date = windows[-1].date
 
-    total_capacity = estimate_total_slot_capacity(windows, active_tables)
-    target_used_slots = int(total_capacity * args.target_ratio)
-    current_used_slots = count_used_slots_in_range(start_date, end_date)
+    if args.auto_publish and not args.dry_run:
+        publish_result = booking_repository.publish_slots(
+            date_from=start_date,
+            date_to=end_date,
+            opened_by=args.opened_by,
+        )
+        print(f"Slots publicados: {publish_result}")
 
-    print("=== Seed de reservas (slots) ===")
+    total_slots, booked_slots = slot_counts(windows)
+    target_booked_slots = int(total_slots * args.target_ratio)
+
+    print("=== Seed de reservas (booking v2) ===")
     print(f"Rango: {start_date} -> {end_date}")
-    print(f"Mesas activas: {active_tables}")
-    print(f"Capacidad total (slots mesa+tiempo): {total_capacity}")
-    print(f"Slots ocupados actuales: {current_used_slots}")
-    print(f"Objetivo ({args.target_ratio:.0%}): {target_used_slots} slots")
+    print(f"Slots totales: {total_slots}")
+    print(f"Slots booked actuales: {booked_slots}")
+    print(f"Objetivo ({args.target_ratio:.0%}): {target_booked_slots} slots booked")
+
+    if total_slots == 0:
+        raise SystemExit(
+            "No hay slots abiertos en el rango. Publica slots primero con /admin/publish-slots "
+            "o ejecuta con --auto-publish."
+        )
 
     if args.dry_run:
         print("Dry-run activado. No se han creado reservas.")
         return
 
-    if current_used_slots >= target_used_slots:
+    if booked_slots >= target_booked_slots:
         print("El objetivo ya está cumplido. No se crean nuevas reservas.")
         return
 
@@ -293,17 +265,17 @@ def main() -> None:
             created += 1
 
         if attempts % 20 == 0:
-            current_used_slots = count_used_slots_in_range(start_date, end_date)
-            if current_used_slots >= target_used_slots:
+            _, booked_slots = slot_counts(windows)
+            if booked_slots >= target_booked_slots:
                 break
 
-    final_used_slots = count_used_slots_in_range(start_date, end_date)
-    final_ratio = (final_used_slots / total_capacity) if total_capacity else 0.0
+    total_slots, final_booked_slots = slot_counts(windows)
+    final_ratio = (final_booked_slots / total_slots) if total_slots else 0.0
 
     print("\n=== Resultado ===")
     print(f"Intentos: {attempts}")
     print(f"Reservas creadas: {created}")
-    print(f"Slots ocupados finales: {final_used_slots}/{total_capacity}")
+    print(f"Slots booked finales: {final_booked_slots}/{total_slots}")
     print(f"Ocupación final: {final_ratio:.2%}")
 
 
