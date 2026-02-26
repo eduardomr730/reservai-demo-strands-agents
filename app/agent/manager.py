@@ -36,6 +36,7 @@ class RestaurantAgentManager:
     
     def __init__(self):
         self.agents: Dict[str, Agent] = {}
+        self.memory_disabled_users: set[str] = set()
         self.system_prompt = build_system_prompt(self._get_current_datetime_spain())
         
         # Herramientas disponibles
@@ -50,6 +51,32 @@ class RestaurantAgentManager:
         ]
         
         logger.info("✅ RestaurantAgentManager inicializado")
+
+    def _create_agent(self, clean_phone: str, *, use_memory: bool) -> Agent:
+        if use_memory:
+            session_id = f"whatsapp_session_{clean_phone}"
+            actor_id = f"whatsapp_user_{clean_phone}"
+            memory_config = AgentCoreMemoryConfig(
+                memory_id=settings.agentcore_memory_id,
+                session_id=session_id,
+                actor_id=actor_id
+            )
+            session_manager = AgentCoreMemorySessionManager(
+                agentcore_memory_config=memory_config,
+                region_name=settings.aws_region
+            )
+            return Agent(
+                model=settings.agent_model,
+                system_prompt=self.system_prompt,
+                session_manager=session_manager,
+                tools=self.tools
+            )
+
+        return Agent(
+            model=settings.agent_model,
+            system_prompt=self.system_prompt,
+            tools=self.tools,
+        )
 
     def _now_spain(self) -> datetime:
         """Devuelve la fecha/hora actual en zona horaria de España."""
@@ -140,37 +167,17 @@ class RestaurantAgentManager:
             logger.debug(f"♻️  Reutilizando agente para {clean_phone}")
             return self.agents[clean_phone]
         
-        # Crear nueva sesión para este usuario
-        session_id = f"whatsapp_session_{clean_phone}"
-        actor_id = f"whatsapp_user_{clean_phone}"
-        
         logger.info(f"🆕 Creando nuevo agente para {clean_phone}")
-        
+        use_memory = clean_phone not in self.memory_disabled_users
+
         try:
-            # Configurar memoria persistente
-            memory_config = AgentCoreMemoryConfig(
-                memory_id=settings.agentcore_memory_id,
-                session_id=session_id,
-                actor_id=actor_id
-            )
-            
-            session_manager = AgentCoreMemorySessionManager(
-                agentcore_memory_config=memory_config,
-                region_name=settings.aws_region
-            )
-            
-            # Crear nuevo agente
-            agent = Agent(
-                model=settings.agent_model,
-                system_prompt=self.system_prompt,
-                session_manager=session_manager,
-                tools=self.tools
-            )
-            
-            # Guardar en cache
+            agent = self._create_agent(clean_phone, use_memory=use_memory)
             self.agents[clean_phone] = agent
-            
-            logger.info(f"✅ Agente creado exitosamente para {clean_phone}")
+
+            if use_memory:
+                logger.info(f"✅ Agente con memoria creado para {clean_phone}")
+            else:
+                logger.info(f"✅ Agente sin memoria creado para {clean_phone}")
             return agent
             
         except Exception as e:
@@ -181,13 +188,14 @@ class RestaurantAgentManager:
             )
 
             # Fallback: continuar sin session_manager para no cortar la conversación
-            agent = Agent(
-                model=settings.agent_model,
-                system_prompt=self.system_prompt,
-                tools=self.tools,
-            )
+            self.memory_disabled_users.add(clean_phone)
+            agent = self._create_agent(clean_phone, use_memory=False)
             self.agents[clean_phone] = agent
             return agent
+
+    def _is_agentcore_memory_runtime_error(self, exc: Exception) -> bool:
+        message = str(exc)
+        return "NoneType' object has no attribute 'get'" in message
 
     def _refresh_agent_system_prompt(self, agent: Agent) -> None:
         """
@@ -216,14 +224,13 @@ class RestaurantAgentManager:
         try:
             logger.info(f"📨 Procesando mensaje de {clean_phone}: {message[:50]}...")
             
+            enriched_message = self._build_message_with_metadata(clean_phone, message)
+
             # Obtener o crear agente
             agent = self._get_or_create_agent(phone_number)
             self._refresh_agent_system_prompt(agent)
 
-            # Inyectar metadatos del canal para evitar pedir el teléfono al usuario
-            enriched_message = self._build_message_with_metadata(clean_phone, message)
-
-            # Procesar mensaje
+            # Procesar mensaje (primer intento)
             results = agent(enriched_message)
             response = results.message['content'][0]['text']
             response = self._sanitize_agent_response(response)
@@ -239,6 +246,34 @@ class RestaurantAgentManager:
             return response
             
         except Exception as e:
+            if self._is_agentcore_memory_runtime_error(e):
+                logger.warning(
+                    "⚠️ Error runtime de AgentCore memory para %s. Reintentando sin memoria persistente.",
+                    clean_phone,
+                    exc_info=True,
+                )
+                self.memory_disabled_users.add(clean_phone)
+                self.agents.pop(clean_phone, None)
+                try:
+                    retry_agent = self._get_or_create_agent(phone_number)
+                    self._refresh_agent_system_prompt(retry_agent)
+                    retry_results = retry_agent(self._build_message_with_metadata(clean_phone, message))
+                    retry_response = retry_results.message['content'][0]['text']
+                    retry_response = self._sanitize_agent_response(retry_response)
+                    if len(retry_response) > settings.max_message_length:
+                        retry_response = retry_response[:settings.max_message_length - 50] + (
+                            "...\n\n(Mensaje completo en próxima respuesta)"
+                        )
+                    logger.info("✅ Respuesta generada tras fallback sin memoria para %s", clean_phone)
+                    return retry_response
+                except Exception as retry_error:
+                    logger.error(
+                        "❌ Falló también el retry sin memoria para %s: %s",
+                        clean_phone,
+                        retry_error,
+                        exc_info=True,
+                    )
+
             logger.error(
                 f"❌ Error procesando mensaje de {clean_phone}: {e}",
                 exc_info=True
