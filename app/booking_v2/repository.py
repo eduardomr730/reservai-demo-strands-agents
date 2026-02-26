@@ -230,7 +230,9 @@ class BookingV2Repository:
                         "opened_by": opened_by,
                         "opened_at": self._now_iso(),
                     }
-                    saved = self.client.put_item(item, condition_expression="attribute_not_exists(PK)")
+                    # Avoid overwriting an existing slot with same PK+SK, but allow
+                    # multiple slots under the same day PK.
+                    saved = self.client.put_item(item, condition_expression="attribute_not_exists(SK)")
                     if saved:
                         created += 1
                     else:
