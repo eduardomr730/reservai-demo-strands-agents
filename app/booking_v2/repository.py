@@ -391,13 +391,14 @@ class BookingV2Repository:
         }
 
     def _slot_update_to_booked(self, slot: dict[str, Any], reservation_id: str) -> dict[str, Any]:
+        current_version = int(slot.get("version", 0) or 0)
         return {
             "Update": {
                 "TableName": self.client.table.name,
                 "Key": self.client.serialize_key({"PK": slot["PK"], "SK": slot["SK"]}),
                 "UpdateExpression": (
                     "SET #status = :booked, reservation_id = :rid, hold_expires_at = :zero, "
-                    "GSI1PK = :gsi_pk, updated_at = :updated_at, #version = #version + :inc"
+                    "GSI1PK = :gsi_pk, updated_at = :updated_at, #version = :new_version"
                 ),
                 "ConditionExpression": "#status = :open OR reservation_id = :rid",
                 "ExpressionAttributeNames": {"#status": "status", "#version": "version"},
@@ -409,20 +410,21 @@ class BookingV2Repository:
                         ":zero": 0,
                         ":gsi_pk": f"DAY#{slot['date']}#STATUS#booked",
                         ":updated_at": self._now_iso(),
-                        ":inc": 1,
+                        ":new_version": current_version + 1,
                     }
                 ),
             }
         }
 
     def _slot_update_to_open(self, slot: dict[str, Any], reservation_id: str) -> dict[str, Any]:
+        current_version = int(slot.get("version", 0) or 0)
         return {
             "Update": {
                 "TableName": self.client.table.name,
                 "Key": self.client.serialize_key({"PK": slot["PK"], "SK": slot["SK"]}),
                 "UpdateExpression": (
                     "SET #status = :open, reservation_id = :empty, hold_expires_at = :zero, "
-                    "GSI1PK = :gsi_pk, updated_at = :updated_at, #version = #version + :inc"
+                    "GSI1PK = :gsi_pk, updated_at = :updated_at, #version = :new_version"
                 ),
                 "ConditionExpression": "reservation_id = :rid",
                 "ExpressionAttributeNames": {"#status": "status", "#version": "version"},
@@ -433,7 +435,7 @@ class BookingV2Repository:
                         ":zero": 0,
                         ":gsi_pk": f"DAY#{slot['date']}#STATUS#open",
                         ":updated_at": self._now_iso(),
-                        ":inc": 1,
+                        ":new_version": current_version + 1,
                         ":rid": reservation_id,
                     }
                 ),
