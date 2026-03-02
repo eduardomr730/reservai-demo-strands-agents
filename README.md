@@ -7,8 +7,8 @@ The application is built with FastAPI and is designed for easy deployment using 
 
 - **Conversational AI:** Utilizes `strands-agents` and Amazon Bedrock (Anthropic Claude Sonnet) to understand and respond to user queries in natural language.
 - **WhatsApp Integration:** Seamlessly integrates with WhatsApp through the Twilio API.
-- **Reservation Management (booking_v2):** Uses explicit open slots in DynamoDB and transactional reservation updates.
-- **Slot Operations:** Supports day/week slot publishing with admin endpoints and scripts.
+- **Reservation Management:** Uses explicit open slots in DynamoDB and transactional reservation updates (no double-booking).
+- **Slot Publishing:** Auto-publishes 30-minute slots on demand from restaurant opening windows.
 - **Persistent Memory:** Employs `bedrock-agentcore` for persistent memory, enabling contextually aware conversations across multiple interactions with the same user.
 - **Information Hub:** Provides detailed information about the restaurant's menu, operating hours, and location, based on a comprehensive system prompt.
 - **Containerized:** Includes a `Dockerfile` and Gunicorn configuration for robust, production-ready deployment.
@@ -64,6 +64,40 @@ Follow these instructions to set up and run the project on your local machine.
     - `AWS_SECRET_ACCESS_KEY`: Your AWS secret key.
     - `AGENTCORE_MEMORY_ID`: The ID for your AgentCore memory instance.
 
+### DynamoDB Table Setup
+
+Create one DynamoDB table with a primary key (`PK`, `SK`) and one GSI for phone lookup:
+
+```bash
+aws dynamodb create-table \
+  --table-name reservai-booking-v2 \
+  --attribute-definitions \
+      AttributeName=PK,AttributeType=S \
+      AttributeName=SK,AttributeType=S \
+      AttributeName=GSI1PK,AttributeType=S \
+      AttributeName=GSI1SK,AttributeType=S \
+  --key-schema \
+      AttributeName=PK,KeyType=HASH \
+      AttributeName=SK,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST \
+  --global-secondary-indexes '[
+    {
+      "IndexName":"gsi1",
+      "KeySchema":[
+        {"AttributeName":"GSI1PK","KeyType":"HASH"},
+        {"AttributeName":"GSI1SK","KeyType":"RANGE"}
+      ],
+      "Projection":{"ProjectionType":"ALL"}
+    }
+  ]'
+```
+
+Or create it with Python (same schema):
+
+```bash
+python3 scripts/create_dynamodb_table.py --table-name reservai-demo-reservations --region eu-west-1
+```
+
 ## 🏃‍♀️ Usage
 
 ### Running Locally
@@ -100,7 +134,6 @@ The application exposes the following endpoints:
 | `GET`  | `/`                       | Root endpoint to check if the service is online.             | Public        |
 | `GET`  | `/health`                 | Health check for monitoring services.                        | Public        |
 | `POST` | `/whatsapp`               | The main webhook to receive messages from Twilio.            | Public        |
-| `GET`  | `/stats`                  | View reservation statistics.                                 | Public        |
 | `POST` | `/test-message`           | Simulate an incoming message without Twilio.                 | Dev Only      |
 | `POST` | `/admin/clear-session`    | Clear the conversation history for a specific phone number.  | Dev Only      |
 
@@ -108,10 +141,7 @@ The application exposes the following endpoints:
 
 The AI agent is equipped with a set of tools to perform specific actions:
 
--   `create_reservation`: Creates a new reservation in the database.
--   `list_reservations`: Lists existing reservations with optional filters.
--   `update_reservation`: Modifies an existing reservation (e.g., changes date, time, or number of people).
--   `cancel_reservation`: Cancels a reservation.
--   `get_reservation_details`: Retrieves detailed information for a specific reservation ID.
--   `calculator`: Performs basic mathematical calculations.
--   `current_time`: Provides the current date and time.
+-   `check_availability`: Checks available slots for a date/time and party size.
+-   `create_reservation`: Creates a reservation by locking one open slot.
+-   `list_reservations`: Lists reservations for a phone (active/all).
+-   `cancel_reservation`: Cancels one reservation and reopens its slot.

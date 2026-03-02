@@ -15,6 +15,7 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 
 from app.config import settings
 from app.agent.prompts import build_system_prompt, ERROR_MESSAGES
+from app.agent.tools import reservation_tools
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +49,14 @@ class RestaurantAgentManager:
             return Agent(
                 model=settings.agent_model,
                 system_prompt=self.system_prompt,
-                session_manager=session_manager
+                session_manager=session_manager,
+                tools=reservation_tools,
             )
 
         return Agent(
             model=settings.agent_model,
-            system_prompt=self.system_prompt
+            system_prompt=self.system_prompt,
+            tools=reservation_tools,
         )
 
     def _now_spain(self) -> datetime:

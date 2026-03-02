@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # DynamoDB
     dynamodb_table_name: str = "reservai-demo-reservations"
     dynamodb_region: str = "eu-west-1"
+    reservation_timezone: str = "Europe/Madrid"
+    reservation_slot_minutes: int = 30
+    reservation_duration_minutes: int = 90
+    reservation_auto_seed_tables: bool = True
+    reservation_auto_publish_slots: bool = True
     
     # Logging
     log_level: str = "INFO"
