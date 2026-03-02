@@ -284,10 +284,21 @@ class BookingV2Repository:
         }
 
     def _query_open_slots(self, date: str) -> list[dict[str, Any]]:
-        return self.client.query(
+        open_slots = self.client.query(
             IndexName="GSI1",
             KeyConditionExpression=Key("GSI1PK").eq(f"DAY#{date}#STATUS#open"),
         )
+        if open_slots:
+            return open_slots
+
+        # GSI queries are eventually consistent. If slots were just published/updated,
+        # fall back to the base partition query to avoid false "no availability".
+        day_items = self.client.query(KeyConditionExpression=Key("PK").eq(self._slot_pk(date)))
+        return [
+            row
+            for row in day_items
+            if row.get("entity_type") == "slot" and str(row.get("status", "")).lower() == "open"
+        ]
 
     def available_times(self, date: str, num_people: int, preferred_zone: str = "") -> list[dict[str, Any]]:
         if num_people < 1 or num_people > 12:
@@ -471,70 +482,73 @@ class BookingV2Repository:
         if not candidates:
             return False, "No hay slots abiertos disponibles para ese horario", None
 
-        selected = candidates[0]
         now_iso = self._now_iso()
-        reservation_id = payload.get("id") or self._reservation_id(payload["date"])
-        reservation = {
-            "id": reservation_id,
-            "status": payload.get("status", "pending").lower(),
-            "date": payload["date"],
-            "time": payload["time"],
-            "num_people": num_people,
-            "customer_name": payload["customer_name"].strip(),
-            "phone": payload["phone"].strip(),
-            "preferences": payload.get("preferences", "").strip(),
-            "special_occasion": payload.get("special_occasion", "").strip(),
-            "table_id": selected.get("table_id", ""),
-            "table_zone": selected.get("zone", "salon"),
-            "slot_ref": self._slot_ref(payload["date"], payload["time"], selected.get("table_id", "")),
-            "created_at": now_iso,
-            "updated_at": now_iso,
-        }
-
-        if reservation["status"] not in VALID_STATUSES:
+        reservation_status = payload.get("status", "pending").lower()
+        if reservation_status not in VALID_STATUSES:
             return False, "Estado inválido. Usa pending, confirmed o cancelled", None
 
-        transact_items: list[dict[str, Any]] = []
-
-        if reservation["status"] in ACTIVE_STATUSES:
-            transact_items.append(self._slot_update_to_booked(selected, reservation_id))
-
-        transact_items.append(
-            {
-                "Put": {
-                    "TableName": self.client.table.name,
-                    "Item": self.client.serialize_item(self._build_reservation_item(reservation)),
-                    "ConditionExpression": "attribute_not_exists(PK)",
-                }
+        # Reintentar con varios candidatos evita fallos por condiciones de carrera
+        # (por ejemplo, slot elegido ya ocupado entre lectura y escritura).
+        for selected in candidates:
+            reservation_id = payload.get("id") or self._reservation_id(payload["date"])
+            reservation = {
+                "id": reservation_id,
+                "status": reservation_status,
+                "date": payload["date"],
+                "time": payload["time"],
+                "num_people": num_people,
+                "customer_name": payload["customer_name"].strip(),
+                "phone": payload["phone"].strip(),
+                "preferences": payload.get("preferences", "").strip(),
+                "special_occasion": payload.get("special_occasion", "").strip(),
+                "table_id": selected.get("table_id", ""),
+                "table_zone": selected.get("zone", "salon"),
+                "slot_ref": self._slot_ref(payload["date"], payload["time"], selected.get("table_id", "")),
+                "created_at": now_iso,
+                "updated_at": now_iso,
             }
-        )
 
-        lookup = {
-            **self._customer_lookup_key(
-                reservation["phone"], reservation["date"], reservation["time"], reservation["id"]
-            ),
-            "entity_type": "customer_lookup",
-            "reservation_id": reservation["id"],
-            "status": reservation["status"],
-            "date": reservation["date"],
-            "time": reservation["time"],
-            "ttl": self._reservation_ttl(reservation["date"], keep_days=30),
-            "updated_at": now_iso,
-        }
-        transact_items.append(
-            {
-                "Put": {
-                    "TableName": self.client.table.name,
-                    "Item": self.client.serialize_item(lookup),
+            transact_items: list[dict[str, Any]] = []
+
+            if reservation["status"] in ACTIVE_STATUSES:
+                transact_items.append(self._slot_update_to_booked(selected, reservation_id))
+
+            transact_items.append(
+                {
+                    "Put": {
+                        "TableName": self.client.table.name,
+                        "Item": self.client.serialize_item(self._build_reservation_item(reservation)),
+                        "ConditionExpression": "attribute_not_exists(PK)",
+                    }
                 }
+            )
+
+            lookup = {
+                **self._customer_lookup_key(
+                    reservation["phone"], reservation["date"], reservation["time"], reservation["id"]
+                ),
+                "entity_type": "customer_lookup",
+                "reservation_id": reservation["id"],
+                "status": reservation["status"],
+                "date": reservation["date"],
+                "time": reservation["time"],
+                "ttl": self._reservation_ttl(reservation["date"], keep_days=30),
+                "updated_at": now_iso,
             }
-        )
+            transact_items.append(
+                {
+                    "Put": {
+                        "TableName": self.client.table.name,
+                        "Item": self.client.serialize_item(lookup),
+                    }
+                }
+            )
 
-        ok = self.client.transact_write(transact_items)
-        if not ok:
-            return False, "No se pudo crear la reserva. Puede que el slot ya se haya ocupado", None
+            ok = self.client.transact_write(transact_items)
+            if ok:
+                return True, "", reservation
 
-        return True, "", reservation
+        return False, "No se pudo crear la reserva. Puede que el slot ya se haya ocupado", None
 
     def list_reservations(
         self,
