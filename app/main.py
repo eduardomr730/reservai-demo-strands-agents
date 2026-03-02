@@ -159,27 +159,13 @@ async def whatsapp_webhook(
                 media_type="application/xml"
             )
         
-        # Procesar con el agente con timeout para evitar que Twilio descarte la respuesta
+        # Procesar con el agente sin timeout artificial para devolver siempre su respuesta final
         logger.info("🤖 Procesando con agente...")
-        try:
-            response_text = await asyncio.wait_for(
-                asyncio.to_thread(
-                    agent_manager.process_message,
-                    From,
-                    Body.strip(),
-                ),
-                timeout=settings.agent_processing_timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "⏱️ Timeout procesando mensaje de %s (>%ss)",
-                From,
-                settings.agent_processing_timeout_seconds,
-            )
-            response_text = (
-                "Estoy revisando tu mensaje y tardé más de lo normal 🙏\n\n"
-                "¿Puedes enviarlo de nuevo en unos segundos?"
-            )
+        response_text = await asyncio.to_thread(
+            agent_manager.process_message,
+            From,
+            Body.strip(),
+        )
         
         logger.info(f"✅ Respuesta generada: {len(response_text)} caracteres")
 
