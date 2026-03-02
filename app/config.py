@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     agent_model: str = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
     
     # DynamoDB
-    dynamodb_table_name: str = "restaurant-reservations"
+    dynamodb_table_name: str = "reservai-demo-reservations"
     dynamodb_region: str = "eu-west-1"
     
     # Logging

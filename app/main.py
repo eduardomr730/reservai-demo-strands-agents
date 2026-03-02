@@ -12,7 +12,6 @@ from app.config import settings
 from app.agent.manager import agent_manager
 from app.agent.prompts import ERROR_MESSAGES
 from app.middleware.validation import twilio_validator
-from app.booking_v2.repository import booking_repository
 
 # Configurar logging
 logging.basicConfig(
@@ -217,41 +216,6 @@ async def test_message(phone: str = Form(...), message: str = Form(...)):
         logger.error(f"Error en test-message: {e}")
         return {"status": "error", "error": str(e)}
 
-
-@app.get("/stats")
-async def get_stats():
-    """Obtener estadísticas básicas del servidor."""
-    try:
-        from collections import Counter
-        
-        # Obtener todas las reservas
-        all_reservations = booking_repository.scan_all_reservations()
-        
-        # Contar por estado
-        statuses = [r.get('status') for r in all_reservations]
-        reservations_by_status = dict(Counter(statuses))
-        
-        # Reservas de hoy
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_reservations = booking_repository.query_reservations_by_date(today)
-        today_slots = booking_repository.slot_stats(today)
-        
-        return {
-            "status": "success",
-            "timestamp": datetime.now().isoformat(),
-            "stats": {
-                "total_reservations": len(all_reservations),
-                "today_reservations": len(today_reservations),
-                "today_slots": today_slots,
-                "by_status": reservations_by_status,
-                "active_users": agent_manager.get_active_sessions_count()
-            }
-        }
-    except Exception as e:
-        logger.error(f"Error obteniendo stats: {e}")
-        return {"status": "error", "error": str(e)}
-
-
 @app.post("/admin/clear-session")
 async def clear_session(phone: str = Form(...)):
     """Limpiar sesión de un usuario (solo desarrollo)."""
@@ -264,46 +228,6 @@ async def clear_session(phone: str = Form(...)):
         "phone": phone
     }
 
-
-@app.post("/admin/publish-slots")
-async def publish_slots(
-    date_from: str = Form(...),
-    date_to: str = Form(...),
-    opened_by: str = Form(default="admin"),
-):
-    """Publicar slots abiertos para un rango de fechas (solo desarrollo)."""
-    if settings.environment == "production":
-        raise HTTPException(status_code=404, detail="Not found")
-
-    try:
-        result = booking_repository.publish_slots(date_from=date_from, date_to=date_to, opened_by=opened_by)
-        return {
-            "status": "success",
-            "date_from": date_from,
-            "date_to": date_to,
-            "result": result,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Error publicando slots: %s", str(exc), exc_info=True)
-        return {"status": "error", "error": str(exc)}
-
-
-@app.get("/admin/availability")
-async def admin_availability(date: str, people: int, zone: str = ""):
-    """Consultar disponibilidad según slots abiertos (solo desarrollo)."""
-    if settings.environment == "production":
-        raise HTTPException(status_code=404, detail="Not found")
-
-    available = booking_repository.available_times(date=date, num_people=people, preferred_zone=zone)
-    return {
-        "status": "success",
-        "date": date,
-        "people": people,
-        "zone": zone or "sin preferencia",
-        "available": available,
-    }
-
-
 # ============================================
 # EVENTOS
 # ============================================
@@ -313,7 +237,7 @@ async def startup_event():
     """Se ejecuta cuando inicia el servidor."""
     logger.info("=" * 70)
     logger.info("🚀 Servidor iniciado")
-    logger.info(f"📍 Servicio: El Rincón de Andalucía WhatsApp Bot v2.0")
+    logger.info(f"📍 Servicio: El Rincón de Andalucía WhatsApp Bot")
     logger.info(f"🌍 Entorno: {settings.environment}")
     logger.info(f"🔧 Debug: {settings.debug}")
     logger.info(f"📊 Workers: {settings.workers}")

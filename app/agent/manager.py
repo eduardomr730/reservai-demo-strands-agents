@@ -8,7 +8,6 @@ from typing import Dict
 from zoneinfo import ZoneInfo
 
 from strands import Agent
-from strands_tools import calculator
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager
@@ -16,14 +15,6 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 
 from app.config import settings
 from app.agent.prompts import build_system_prompt, ERROR_MESSAGES
-from app.agent.tools import (
-    check_availability,
-    create_reservation,
-    list_reservations,
-    update_reservation,
-    cancel_reservation,
-    get_reservation_details
-)
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +29,7 @@ class RestaurantAgentManager:
         self.agents: Dict[str, Agent] = {}
         self.memory_disabled_users: set[str] = set()
         self.system_prompt = build_system_prompt(self._get_current_datetime_spain())
-        
-        # Herramientas disponibles
-        self.tools = [
-            calculator,
-            check_availability,
-            create_reservation,
-            list_reservations,
-            update_reservation,
-            cancel_reservation,
-            get_reservation_details
-        ]
-        
+
         logger.info("✅ RestaurantAgentManager inicializado")
 
     def _create_agent(self, clean_phone: str, *, use_memory: bool) -> Agent:
@@ -68,14 +48,12 @@ class RestaurantAgentManager:
             return Agent(
                 model=settings.agent_model,
                 system_prompt=self.system_prompt,
-                session_manager=session_manager,
-                tools=self.tools
+                session_manager=session_manager
             )
 
         return Agent(
             model=settings.agent_model,
-            system_prompt=self.system_prompt,
-            tools=self.tools,
+            system_prompt=self.system_prompt
         )
 
     def _now_spain(self) -> datetime:
